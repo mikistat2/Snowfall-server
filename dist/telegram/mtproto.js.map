@@ -1,0 +1,1 @@
+{"version":3,"file":"mtproto.js","sourceRoot":"","sources":["../../src/telegram/mtproto.ts"],"names":[],"mappings":";AAAA;;;;;;;;GAQG;;;AAQU,QAAA,cAAc,GAAmB;IAC5C,OAAO,EAAE,SAAS;IAClB,WAAW;QACT,OAAO,KAAK,CAAC,CAAC,oCAAoC;IACpD,CAAC;IACD,KAAK,CAAC,WAAW;QACf,MAAM,IAAI,KAAK,CAAC,yEAAyE,CAAC,CAAC;IAC7F,CAAC;CACF,CAAC"}
