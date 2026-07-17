@@ -5,6 +5,7 @@ import { signPlatformToken } from '../utils/jwt';
 import { forbidden, notFound, unauthorized, AppError } from '../utils/errors';
 import * as platformModel from '../models/platformModel';
 import * as gymModel from '../models/gymModel';
+import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
 
 /**
@@ -71,6 +72,16 @@ export async function unfreezeGym(req: Request, res: Response): Promise<void> {
   await platformModel.setStatus(id, 'active');
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'unfreeze'));
   res.json({ ok: true, notified });
+}
+
+/** Full member dump of every registered gym — the client renders it as a backup PDF. */
+export async function exportAllMembers(_req: Request, res: Response): Promise<void> {
+  const gyms = await platformModel.listGyms();
+  const result = [];
+  for (const gym of gyms) {
+    result.push({ gym, members: await memberModel.exportByGym(gym.id) });
+  }
+  res.json(result);
 }
 
 export async function getSettings(_req: Request, res: Response): Promise<void> {

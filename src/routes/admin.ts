@@ -42,6 +42,7 @@ adminRouter.put(
   asyncHandler(admin.updateSettings),
 );
 adminRouter.get('/gyms', asyncHandler(admin.listGyms));
+adminRouter.get('/export', asyncHandler(admin.exportAllMembers));
 adminRouter.post('/gyms/:id/approve', asyncHandler(admin.approveGym));
 adminRouter.post('/gyms/:id/renew', asyncHandler(admin.renewGym));
 adminRouter.get('/gyms/:id', asyncHandler(admin.gymDetail));
