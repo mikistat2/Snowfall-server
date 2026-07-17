@@ -13,6 +13,10 @@ export function getTransport(): nodemailer.Transporter | null {
   transporter ??= nodemailer.createTransport({
     service: 'gmail',
     auth: { user: env.mail.user, pass: env.mail.pass },
+    // fail fast instead of hanging API requests when SMTP is slow/blocked
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
   });
   return transporter;
 }

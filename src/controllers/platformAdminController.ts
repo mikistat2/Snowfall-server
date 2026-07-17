@@ -7,6 +7,17 @@ import * as platformModel from '../models/platformModel';
 import * as gymModel from '../models/gymModel';
 import * as platformAlert from '../services/platformAlertService';
 
+/**
+ * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
+ * most `ms`, then respond anyway — the alert keeps sending in the background.
+ */
+async function timeboxed<T>(promise: Promise<T>, ms = 4000): Promise<T | undefined> {
+  return Promise.race([
+    promise,
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms).unref?.()),
+  ]);
+}
+
 function safeEqual(a: string, b: string): boolean {
   const ha = crypto.createHash('sha256').update(a).digest();
   const hb = crypto.createHash('sha256').update(b).digest();
@@ -49,7 +60,7 @@ export async function freezeGym(req: Request, res: Response): Promise<void> {
   // kill active sessions so the freeze takes effect immediately
   await platformModel.revokeGymSessions(id);
   // tell the owner what happened and why (Telegram + email, best effort)
-  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'freeze', note);
+  const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'freeze', note));
   res.json({ ok: true, notified });
 }
 
@@ -58,7 +69,7 @@ export async function unfreezeGym(req: Request, res: Response): Promise<void> {
   const gym = await gymModel.findById(id);
   if (!gym) throw notFound('Gym not found');
   await platformModel.setStatus(id, 'active');
-  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'unfreeze');
+  const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'unfreeze'));
   res.json({ ok: true, notified });
 }
 
@@ -77,7 +88,7 @@ export async function approveGym(req: Request, res: Response): Promise<void> {
   if (!gym) throw notFound('Gym not found');
   if (gym.status !== 'pending') throw forbidden('Only pending registrations can be approved');
   const ends = await platformModel.approveGym(id);
-  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString());
+  const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString()));
   res.json({ ok: true, subscription_ends_at: ends, notified });
 }
 
@@ -88,7 +99,9 @@ export async function renewGym(req: Request, res: Response): Promise<void> {
   if (!gym) throw notFound('Gym not found');
   if (gym.status === 'pending') throw forbidden('Approve the registration first');
   const ends = await platformModel.renewGym(id);
-  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString());
+  const notified = await timeboxed(
+    platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString()),
+  );
   res.json({ ok: true, subscription_ends_at: ends, notified });
 }
 
@@ -109,7 +122,7 @@ export async function deleteGym(req: Request, res: Response): Promise<void> {
     throw forbidden('Confirmation name does not match the gym name');
   }
   // alert BEFORE deleting — afterwards the owner accounts are gone
-  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'delete', note);
+  const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'delete', note), 8000);
   await platformModel.deleteGym(id);
   res.json({ ok: true, notified });
 }
