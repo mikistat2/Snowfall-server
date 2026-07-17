@@ -15,6 +15,7 @@ import * as settings from '../controllers/settingsController';
 import * as telegram from '../controllers/telegramController';
 import * as guests from '../controllers/guestController';
 import * as auditLogModel from '../models/auditLogModel';
+import * as platformModel from '../models/platformModel';
 import { cameraProxy } from '../controllers/cameraProxyController';
 import * as feedback from '../controllers/feedbackController';
 
@@ -131,6 +132,14 @@ const feedbackLimiter = rateLimit({
 });
 
 // ---------- auth ----------
+// public: lets the landing/registration pages advertise an active free trial
+api.get(
+  '/auth/registration-mode',
+  asyncHandler(async (_req, res) => {
+    const { trial_mode, trial_days } = await platformModel.getSettings();
+    res.json({ trial_mode, trial_days });
+  }),
+);
 api.post('/auth/register-gym', authLimiter, validate(registerGymSchema), asyncHandler(auth.registerGym));
 api.post(
   '/auth/login',
