@@ -74,6 +74,14 @@ export async function unfreezeGym(req: Request, res: Response): Promise<void> {
   res.json({ ok: true, notified });
 }
 
+/** Full member dump of ONE gym — the client renders it as that gym's members PDF. */
+export async function exportGymMembers(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const gym = await gymModel.findById(id);
+  if (!gym) throw notFound('Gym not found');
+  res.json({ gym_name: gym.name, members: await memberModel.exportByGym(id) });
+}
+
 /** Full member dump of every registered gym — the client renders it as a backup PDF. */
 export async function exportAllMembers(_req: Request, res: Response): Promise<void> {
   const gyms = await platformModel.listGyms();
