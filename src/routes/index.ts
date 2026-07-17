@@ -3,7 +3,8 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/async';
 import { validate } from '../middleware/validate';
-import { requireAuth, requireOwner } from '../middleware/auth';
+import { requireAuth, requireOwner, blockFrozenGym } from '../middleware/auth';
+import { adminRouter } from './admin';
 import * as auth from '../controllers/authController';
 import * as plans from '../controllers/planController';
 import * as members from '../controllers/memberController';
@@ -143,8 +144,12 @@ api.post('/auth/logout', validate(z.object({ refreshToken: z.string() })), async
 // tags cannot send an Authorization header (registered before requireAuth).
 api.get('/camera-proxy', asyncHandler(cameraProxy));
 
-// everything below requires a logged-in staff member
+// ---------- platform super-admin (product owner) ----------
+api.use('/admin', adminRouter);
+
+// everything below requires a logged-in staff member of a non-frozen gym
 api.use(requireAuth);
+api.use(asyncHandler(blockFrozenGym));
 
 // ---------- plans ----------
 api.get('/plans', asyncHandler(plans.list));
@@ -155,6 +160,7 @@ api.delete('/plans/:id', asyncHandler(plans.remove));
 // ---------- members ----------
 api.get('/members', asyncHandler(members.list));
 api.get('/members/descriptors', asyncHandler(members.allDescriptors));
+api.get('/members/export', asyncHandler(members.exportData)); // before /members/:id
 api.post('/members', validate(enrollSchema), asyncHandler(members.enroll));
 api.get('/members/:id', asyncHandler(members.detail));
 api.put('/members/:id', validate(memberInfoSchema.partial()), asyncHandler(members.update));

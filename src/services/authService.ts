@@ -9,7 +9,7 @@ import {
   hashRefreshToken,
   type AccessPayload,
 } from '../utils/jwt';
-import { conflict, unauthorized } from '../utils/errors';
+import { conflict, forbidden, unauthorized } from '../utils/errors';
 
 export interface AuthResult {
   accessToken: string;
@@ -56,6 +56,9 @@ export async function login(email: string, password: string): Promise<AuthResult
   }
   const gym = await gymModel.findById(user.gym_id);
   if (!gym) throw unauthorized('Gym not found');
+  if (gym.status === 'frozen') {
+    throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+  }
 
   return issueTokens({ sub: user.id, gymId: gym.id, role: user.role, name: user.name }, {
     user: { id: user.id, name: user.name, email: user.email, role: user.role, gym_id: gym.id },
@@ -73,6 +76,9 @@ export async function refresh(refreshToken: string): Promise<AuthResult> {
   if (!user) throw unauthorized('User no longer exists');
   const gym = await gymModel.findById(user.gym_id);
   if (!gym) throw unauthorized('Gym not found');
+  if (gym.status === 'frozen') {
+    throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+  }
 
   await refreshTokenModel.revoke(hash);
   return issueTokens({ sub: user.id, gymId: gym.id, role: user.role, name: user.name }, {

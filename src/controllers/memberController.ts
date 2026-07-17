@@ -15,6 +15,11 @@ export async function list(req: Request, res: Response): Promise<void> {
   );
 }
 
+/** Full data dump for the client-side PDF export. */
+export async function exportData(req: Request, res: Response): Promise<void> {
+  res.json(await memberModel.exportByGym(req.auth.gymId));
+}
+
 export async function detail(req: Request, res: Response): Promise<void> {
   res.json(await memberService.detail(req.auth.gymId, Number(req.params.id)));
 }

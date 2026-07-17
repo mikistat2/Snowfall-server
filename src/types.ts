@@ -38,6 +38,9 @@ export interface GymRow {
   phone: string | null;
   telegram_bot_token: string | null;
   settings: GymSettings;
+  status: 'active' | 'frozen';
+  frozen_at: string | null;
+  admin_note: string | null;
 }
 
 export interface UserRow {

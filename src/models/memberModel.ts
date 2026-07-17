@@ -36,6 +36,62 @@ export async function listByGym(
   return q;
 }
 
+export interface MemberExportRow {
+  id: number;
+  full_name: string;
+  phone: string | null;
+  sex: string | null;
+  status: MemberStatus;
+  joined_at: string;
+  telegram_username: string | null;
+  telegram_linked: boolean;
+  plan_name: string | null;
+  starts_at: string | null;
+  expires_at: string | null;
+  payments_count: number;
+  total_paid: string;
+  last_payment_at: string | null;
+  checkins_count: number;
+  last_checkin_at: string | null;
+}
+
+/** Full member data dump for the PDF export (one row per member). */
+export async function exportByGym(gymId: number): Promise<MemberExportRow[]> {
+  const { rows } = await db.raw(
+    `
+    SELECT
+      m.id, m.full_name, m.phone, m.sex, m.status, m.joined_at,
+      m.telegram_username,
+      (m.telegram_chat_id IS NOT NULL)                             AS telegram_linked,
+      p.name                                                       AS plan_name,
+      s.starts_at, s.expires_at,
+      COALESCE(pay.cnt, 0)::int                                    AS payments_count,
+      COALESCE(pay.total, 0)::text                                 AS total_paid,
+      pay.last_at                                                  AS last_payment_at,
+      COALESCE(ci.cnt, 0)::int                                     AS checkins_count,
+      ci.last_at                                                   AS last_checkin_at
+    FROM members m
+    LEFT JOIN LATERAL (
+      SELECT plan_id, starts_at, expires_at FROM subscriptions
+      WHERE member_id = m.id ORDER BY expires_at DESC LIMIT 1
+    ) s ON TRUE
+    LEFT JOIN plans p ON p.id = s.plan_id
+    LEFT JOIN LATERAL (
+      SELECT count(*) AS cnt, sum(amount) AS total, max(created_at) AS last_at
+      FROM payments WHERE member_id = m.id
+    ) pay ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*) AS cnt, max(checked_in_at) AS last_at
+      FROM check_ins WHERE member_id = m.id
+    ) ci ON TRUE
+    WHERE m.gym_id = ?
+    ORDER BY m.full_name
+  `,
+    [gymId],
+  );
+  return rows;
+}
+
 export async function findById(gymId: number, id: number, trx: Knex = db): Promise<MemberRow | undefined> {
   return trx('members').where({ gym_id: gymId, id }).first();
 }

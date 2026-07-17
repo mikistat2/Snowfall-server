@@ -4,10 +4,16 @@ import { env } from '../config/env';
 import { unauthorized } from './errors';
 
 export interface AccessPayload {
-  sub: number; // user id
-  gymId: number;
-  role: 'owner' | 'staff';
+  sub: number; // user id (0 for the platform admin)
+  gymId: number; // 0 for the platform admin
+  role: 'owner' | 'staff' | 'platform';
   name: string;
+}
+
+/** Platform super-admin session token (longer-lived; no refresh flow). */
+export function signPlatformToken(): string {
+  const payload: AccessPayload = { sub: 0, gymId: 0, role: 'platform', name: 'Platform Admin' };
+  return jwt.sign(payload, env.jwt.accessSecret, { expiresIn: '12h' });
 }
 
 export function signAccessToken(payload: AccessPayload): string {

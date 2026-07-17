@@ -1,8 +1,8 @@
-import nodemailer from 'nodemailer';
 import { env } from '../config/env';
 import * as gymModel from '../models/gymModel';
 import * as userModel from '../models/userModel';
 import { badRequest } from '../utils/errors';
+import { getTransport, isMailConfigured } from './mailer';
 
 /**
  * Sends gym feedback straight to the product owner's inbox via Gmail SMTP.
@@ -14,20 +14,7 @@ import { badRequest } from '../utils/errors';
  * server env; otherwise sending is disabled and the endpoint reports it.
  */
 
-let transporter: nodemailer.Transporter | null = null;
-
-function getTransport(): nodemailer.Transporter | null {
-  if (!env.mail.user || !env.mail.pass) return null;
-  transporter ??= nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: env.mail.user, pass: env.mail.pass },
-  });
-  return transporter;
-}
-
-export function isMailConfigured(): boolean {
-  return getTransport() !== null;
-}
+export { isMailConfigured };
 
 const CATEGORY_LABELS: Record<string, string> = {
   suggestion: 'Suggestion',

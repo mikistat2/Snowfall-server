@@ -31,6 +31,12 @@ export const env = {
     accessTtl: optional('JWT_ACCESS_TTL', '15m'),
     refreshTtlDays: 30,
   },
+  // Platform super-admin (the product owner). The /platform admin area is
+  // disabled until PLATFORM_ADMIN_PASSWORD is set.
+  platformAdmin: {
+    email: optional('PLATFORM_ADMIN_EMAIL', 'miki123mbt@gmail.com'),
+    password: optional('PLATFORM_ADMIN_PASSWORD', ''),
+  },
   // Feedback email (Gmail SMTP). SMTP_USER/SMTP_PASS must be a Gmail address
   // + App Password (2-Step Verification required) for sending to work.
   mail: {
