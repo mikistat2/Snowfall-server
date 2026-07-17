@@ -108,6 +108,7 @@ const settingsSchema = z.object({
       match_threshold: z.number().min(0.2).max(0.9),
       closing_time: z.string().regex(/^\d{2}:\d{2}$/),
       entry_mode: z.enum(['auto', 'manual']),
+      camera_enabled: z.boolean(),
     })
     .partial()
     .optional(),

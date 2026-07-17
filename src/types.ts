@@ -19,6 +19,8 @@ export interface GymSettings {
   closing_time: string;
   /** 'auto': allowed members pass instantly; 'manual': staff approve each entry. */
   entry_mode: 'auto' | 'manual';
+  /** false: gym has no camera — enroll without face captures, monitor shows gym name only. */
+  camera_enabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: GymSettings = {
@@ -29,6 +31,7 @@ export const DEFAULT_SETTINGS: GymSettings = {
   match_threshold: 0.5,
   closing_time: '22:00',
   entry_mode: 'auto',
+  camera_enabled: true,
 };
 
 export interface GymRow {
