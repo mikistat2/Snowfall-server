@@ -16,9 +16,24 @@ import * as userModel from '../models/userModel';
  *    frozen, so this is the reliable channel).
  */
 
-export type PlatformAction = 'freeze' | 'unfreeze' | 'delete';
+export type PlatformAction = 'freeze' | 'unfreeze' | 'delete' | 'approve' | 'renew';
 
 const MESSAGES: Record<PlatformAction, { subject: string; body: (gym: string, note?: string) => string }> = {
+  approve: {
+    subject: 'Your gym registration has been approved 🎉',
+    body: (gym, note) =>
+      `🎉 Great news — your gym "${gym}" has been approved on the Snowfall platform!\n\n` +
+      `You can now log in with the email and password you registered with.\n` +
+      (note ? `Your subscription is valid until ${note}.\n` : '') +
+      `\nWelcome aboard!`,
+  },
+  renew: {
+    subject: 'Your subscription has been renewed',
+    body: (gym, note) =>
+      `✅ The subscription for your gym "${gym}" on Snowfall has been renewed` +
+      (note ? ` and is now valid until ${note}` : '') +
+      `. Thank you!`,
+  },
   freeze: {
     subject: 'Your gym account has been frozen',
     body: (gym, note) =>
@@ -93,4 +108,53 @@ export async function notifyGymOwners(
   }
 
   return result;
+}
+
+/** Email the platform admin (you) — new registrations, expiring subscriptions, … */
+export async function notifyPlatformAdmin(subject: string, text: string): Promise<void> {
+  try {
+    const transport = getTransport();
+    if (!transport) return;
+    await transport.sendMail({
+      from: `"Snowfall Platform" <${env.mail.user}>`,
+      to: env.platformAdmin.email,
+      subject: `[Snowfall Admin] ${subject}`,
+      text,
+    });
+  } catch (err) {
+    console.warn('[platform-alert] admin email failed:', err);
+  }
+}
+
+/** Days until a gym's subscription ends that trigger an admin reminder. */
+const REMINDER_DAYS = new Set([30, 14, 7, 3, 1, 0]);
+
+/**
+ * Daily job: email the platform admin about yearly subscriptions (and free
+ * trials) that are about to end or have just ended. Fires at 30/14/7/3/1/0
+ * days remaining so the mailbox is not spammed every day.
+ */
+export async function runSubscriptionAlerts(): Promise<void> {
+  const gyms: { id: number; name: string; is_trial: boolean; subscription_ends_at: Date }[] = await db('gyms')
+    .where({ status: 'active' })
+    .whereNotNull('subscription_ends_at')
+    .select('id', 'name', 'is_trial', 'subscription_ends_at');
+
+  const lines: string[] = [];
+  for (const gym of gyms) {
+    const daysLeft = Math.floor((new Date(gym.subscription_ends_at).getTime() - Date.now()) / 86_400_000);
+    if (!REMINDER_DAYS.has(daysLeft)) continue;
+    const kind = gym.is_trial ? 'FREE TRIAL' : 'yearly subscription';
+    const when = daysLeft === 0 ? 'ends TODAY' : `ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`;
+    lines.push(
+      `• ${gym.name} (id ${gym.id}) — ${kind} ${when} (${new Date(gym.subscription_ends_at).toDateString()})`,
+    );
+  }
+  if (lines.length === 0) return;
+
+  await notifyPlatformAdmin(
+    `${lines.length} gym subscription${lines.length === 1 ? '' : 's'} ending soon`,
+    `The following gyms are approaching the end of their subscription:\n\n${lines.join('\n')}\n\n` +
+      `Open your platform panel to renew, freeze or contact them.`,
+  );
 }

@@ -62,6 +62,36 @@ export async function unfreezeGym(req: Request, res: Response): Promise<void> {
   res.json({ ok: true, notified });
 }
 
+export async function getSettings(_req: Request, res: Response): Promise<void> {
+  res.json(await platformModel.getSettings());
+}
+
+export async function updateSettings(req: Request, res: Response): Promise<void> {
+  res.json(await platformModel.updateSettings(req.body));
+}
+
+/** Approve a pending registration: activate + start the paid year. */
+export async function approveGym(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const gym = await gymModel.findById(id);
+  if (!gym) throw notFound('Gym not found');
+  if (gym.status !== 'pending') throw forbidden('Only pending registrations can be approved');
+  const ends = await platformModel.approveGym(id);
+  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString());
+  res.json({ ok: true, subscription_ends_at: ends, notified });
+}
+
+/** Extend the yearly subscription by one year (also converts a trial to paid). */
+export async function renewGym(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const gym = await gymModel.findById(id);
+  if (!gym) throw notFound('Gym not found');
+  if (gym.status === 'pending') throw forbidden('Approve the registration first');
+  const ends = await platformModel.renewGym(id);
+  const notified = await platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString());
+  res.json({ ok: true, subscription_ends_at: ends, notified });
+}
+
 export async function updateNote(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const gym = await gymModel.findById(id);

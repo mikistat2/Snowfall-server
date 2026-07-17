@@ -3,6 +3,8 @@ import { db } from '../db/knex';
 import * as gymModel from '../models/gymModel';
 import * as userModel from '../models/userModel';
 import * as refreshTokenModel from '../models/refreshTokenModel';
+import * as platformModel from '../models/platformModel';
+import * as platformAlert from './platformAlertService';
 import {
   signAccessToken,
   generateRefreshToken,
@@ -18,17 +20,35 @@ export interface AuthResult {
   gym: { id: number; name: string };
 }
 
+/** Registration awaiting platform-admin approval — no tokens issued. */
+export interface PendingRegistration {
+  pending: true;
+  gym: { id: number; name: string };
+}
+
 export async function registerGym(input: {
   gym: { name: string; address?: string; phone?: string };
   owner: { name: string; email: string; password: string; phone?: string };
-}): Promise<AuthResult> {
+}): Promise<AuthResult | PendingRegistration> {
   const existing = await userModel.findByEmail(input.owner.email);
   if (existing) throw conflict('An account with this email already exists');
 
   const passwordHash = await bcrypt.hash(input.owner.password, 10);
 
+  // Free-trial mode (set by the platform admin): the gym starts immediately
+  // on a limited trial. Otherwise it waits as 'pending' until approved.
+  const platform = await platformModel.getSettings();
+  const trialFields = platform.trial_mode
+    ? {
+        status: 'active' as const,
+        is_trial: true,
+        approved_at: new Date(),
+        subscription_ends_at: new Date(Date.now() + platform.trial_days * 86_400_000),
+      }
+    : { status: 'pending' as const };
+
   const { gym, user } = await db.transaction(async (trx) => {
-    const gym = await gymModel.create(input.gym, trx);
+    const gym = await gymModel.create({ ...input.gym, ...trialFields }, trx);
     const user = await userModel.create(
       {
         gym_id: gym.id,
@@ -42,6 +62,23 @@ export async function registerGym(input: {
     );
     return { gym, user };
   });
+
+  // tell the platform admin (best effort, never blocks registration)
+  void platformAlert
+    .notifyPlatformAdmin(
+      platform.trial_mode
+        ? `New gym on FREE TRIAL: ${gym.name}`
+        : `New gym awaiting approval: ${gym.name}`,
+      `Gym: ${gym.name}\nOwner: ${user.name} <${user.email}>\nPhone: ${input.gym.phone ?? input.owner.phone ?? '-'}\n\n` +
+        (platform.trial_mode
+          ? `Registered on a ${platform.trial_days}-day free trial (trial mode is ON). No action needed.`
+          : `Open your platform panel to approve or reject this registration.`),
+    )
+    .catch(() => undefined);
+
+  if (gym.status === 'pending') {
+    return { pending: true, gym: { id: gym.id, name: gym.name } };
+  }
 
   return issueTokens({ sub: user.id, gymId: gym.id, role: 'owner', name: user.name }, {
     user: { id: user.id, name: user.name, email: user.email, role: user.role, gym_id: gym.id },
@@ -58,6 +95,12 @@ export async function login(email: string, password: string): Promise<AuthResult
   if (!gym) throw unauthorized('Gym not found');
   if (gym.status === 'frozen') {
     throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+  }
+  if (gym.status === 'pending') {
+    throw forbidden(
+      'Your registration is still awaiting approval by the platform admin. You will be notified by email once it is approved.',
+      'GYM_PENDING',
+    );
   }
 
   return issueTokens({ sub: user.id, gymId: gym.id, role: user.role, name: user.name }, {
@@ -78,6 +121,12 @@ export async function refresh(refreshToken: string): Promise<AuthResult> {
   if (!gym) throw unauthorized('Gym not found');
   if (gym.status === 'frozen') {
     throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+  }
+  if (gym.status === 'pending') {
+    throw forbidden(
+      'Your registration is still awaiting approval by the platform admin. You will be notified by email once it is approved.',
+      'GYM_PENDING',
+    );
   }
 
   await refreshTokenModel.revoke(hash);

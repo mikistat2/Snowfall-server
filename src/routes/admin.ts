@@ -31,7 +31,19 @@ adminRouter.post(
 adminRouter.use(requirePlatformAdmin);
 
 adminRouter.get('/overview', asyncHandler(admin.overview));
+adminRouter.get('/settings', asyncHandler(admin.getSettings));
+adminRouter.put(
+  '/settings',
+  validate(
+    z
+      .object({ trial_mode: z.boolean(), trial_days: z.number().int().min(1).max(365) })
+      .partial(),
+  ),
+  asyncHandler(admin.updateSettings),
+);
 adminRouter.get('/gyms', asyncHandler(admin.listGyms));
+adminRouter.post('/gyms/:id/approve', asyncHandler(admin.approveGym));
+adminRouter.post('/gyms/:id/renew', asyncHandler(admin.renewGym));
 adminRouter.get('/gyms/:id', asyncHandler(admin.gymDetail));
 adminRouter.post(
   '/gyms/:id/freeze',

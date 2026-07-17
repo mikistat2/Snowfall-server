@@ -7,7 +7,15 @@ export async function findById(id: number, trx: Knex = db): Promise<GymRow | und
 }
 
 export async function create(
-  data: { name: string; address?: string | null; phone?: string | null },
+  data: {
+    name: string;
+    address?: string | null;
+    phone?: string | null;
+    status?: 'pending' | 'active';
+    is_trial?: boolean;
+    approved_at?: Date | null;
+    subscription_ends_at?: Date | null;
+  },
   trx: Knex = db,
 ): Promise<GymRow> {
   const [row] = await trx('gyms')

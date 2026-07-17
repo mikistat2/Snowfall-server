@@ -5,6 +5,7 @@ import * as gymModel from '../models/gymModel';
 import * as occupancyService from '../services/occupancyService';
 import * as notificationService from '../services/notificationService';
 import * as guestModel from '../models/guestModel';
+import * as platformAlert from '../services/platformAlertService';
 
 /**
  * Jobs:
@@ -55,6 +56,17 @@ export function startJobs(): void {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[jobs] closing summary failed', err);
+    }
+  });
+
+  // 08:00 daily: email the PLATFORM admin about gym subscriptions/trials
+  // ending soon (30/14/7/3/1/0 days left).
+  cron.schedule('0 8 * * *', async () => {
+    try {
+      await platformAlert.runSubscriptionAlerts();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[jobs] platform subscription alerts failed', err);
     }
   });
 }

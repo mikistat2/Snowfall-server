@@ -41,9 +41,18 @@ export interface GymRow {
   phone: string | null;
   telegram_bot_token: string | null;
   settings: GymSettings;
-  status: 'active' | 'frozen';
+  status: 'pending' | 'active' | 'frozen';
   frozen_at: string | null;
   admin_note: string | null;
+  approved_at: string | null;
+  subscription_ends_at: string | null;
+  is_trial: boolean;
+}
+
+/** Single-row global platform configuration (see platform_settings table). */
+export interface PlatformSettings {
+  trial_mode: boolean;
+  trial_days: number;
 }
 
 export interface UserRow {
