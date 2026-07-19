@@ -1,9 +1,11 @@
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import type { Request, Response } from 'express';
 import { env } from '../config/env';
 import { signPlatformToken } from '../utils/jwt';
-import { forbidden, notFound, unauthorized, AppError } from '../utils/errors';
+import { conflict, forbidden, notFound, unauthorized, AppError } from '../utils/errors';
 import * as platformModel from '../models/platformModel';
+import * as platformAdminModel from '../models/platformAdminModel';
 import * as gymModel from '../models/gymModel';
 import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
@@ -30,10 +32,40 @@ export async function login(req: Request, res: Response): Promise<void> {
   if (!env.platformAdmin.password) {
     throw new AppError(503, 'Platform admin is not configured (set PLATFORM_ADMIN_PASSWORD)');
   }
-  if (!safeEqual(email.toLowerCase(), env.platformAdmin.email.toLowerCase()) || !safeEqual(password, env.platformAdmin.password)) {
+  // the product owner (env credentials) — full access
+  if (safeEqual(email.toLowerCase(), env.platformAdmin.email.toLowerCase()) && safeEqual(password, env.platformAdmin.password)) {
+    res.json({
+      token: signPlatformToken(),
+      email: env.platformAdmin.email,
+      role: 'owner',
+      name: 'Platform Owner',
+      permissions: { approve: true, freeze: true, renew: true, export: true },
+    });
+    return;
+  }
+  // sub-admins created by the owner — limited access
+  const admin = await platformAdminModel.findByEmail(email);
+  if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
     throw unauthorized('Invalid email or password');
   }
-  res.json({ token: signPlatformToken(), email: env.platformAdmin.email });
+  const pub = platformAdminModel.toPublic(admin);
+  res.json({
+    token: signPlatformToken(admin.id, admin.name),
+    email: admin.email,
+    role: 'admin',
+    name: admin.name,
+    permissions: pub.permissions,
+  });
+}
+
+/** Current session: role + live permissions (the UI re-syncs from this). */
+export async function me(req: Request, res: Response): Promise<void> {
+  const p = req.platform!;
+  res.json({
+    role: p.isOwner ? 'owner' : 'admin',
+    name: p.name,
+    permissions: p.permissions,
+  });
 }
 
 export async function overview(_req: Request, res: Response): Promise<void> {
@@ -144,4 +176,55 @@ export async function deleteGym(req: Request, res: Response): Promise<void> {
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'delete', note), 8000);
   await platformModel.deleteGym(id);
   res.json({ ok: true, notified });
+}
+
+// ------------------------------------------- sub-admin management (owner) ----
+
+export async function listAdmins(_req: Request, res: Response): Promise<void> {
+  res.json(await platformAdminModel.list());
+}
+
+export async function createAdmin(req: Request, res: Response): Promise<void> {
+  const { name, email, password, permissions } = req.body as {
+    name: string;
+    email: string;
+    password: string;
+    permissions: platformAdminModel.PlatformAdminPerms;
+  };
+  if (email.toLowerCase() === env.platformAdmin.email.toLowerCase()) {
+    throw conflict('That email is the platform owner account');
+  }
+  if (await platformAdminModel.findByEmail(email)) {
+    throw conflict('An admin with that email already exists');
+  }
+  const admin = await platformAdminModel.create({
+    name,
+    email,
+    passwordHash: await bcrypt.hash(password, 10),
+    permissions,
+  });
+  res.status(201).json(admin);
+}
+
+export async function updateAdmin(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const { name, password, permissions } = req.body as {
+    name?: string;
+    password?: string;
+    permissions?: Partial<platformAdminModel.PlatformAdminPerms>;
+  };
+  const admin = await platformAdminModel.update(id, {
+    name,
+    passwordHash: password ? await bcrypt.hash(password, 10) : undefined,
+    permissions,
+  });
+  if (!admin) throw notFound('Admin not found');
+  res.json(admin);
+}
+
+export async function removeAdmin(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  if (!(await platformAdminModel.remove(id))) throw notFound('Admin not found');
+  // their token dies on the next request — requirePlatformAdmin re-checks the DB
+  res.json({ ok: true });
 }

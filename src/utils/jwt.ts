@@ -4,15 +4,19 @@ import { env } from '../config/env';
 import { unauthorized } from './errors';
 
 export interface AccessPayload {
-  sub: number; // user id (0 for the platform admin)
+  sub: number; // user id (platform tokens: 0 = the owner, otherwise platform_admins.id)
   gymId: number; // 0 for the platform admin
   role: 'owner' | 'staff' | 'platform';
   name: string;
 }
 
-/** Platform super-admin session token (longer-lived; no refresh flow). */
-export function signPlatformToken(): string {
-  const payload: AccessPayload = { sub: 0, gymId: 0, role: 'platform', name: 'Platform Admin' };
+/**
+ * Platform session token (longer-lived; no refresh flow). sub 0 is the
+ * product owner (env credentials); any other sub is a platform_admins row —
+ * verified against the DB on every request so removal is instant.
+ */
+export function signPlatformToken(adminId = 0, name = 'Platform Owner'): string {
+  const payload: AccessPayload = { sub: adminId, gymId: 0, role: 'platform', name };
   return jwt.sign(payload, env.jwt.accessSecret, { expiresIn: '12h' });
 }
 

@@ -234,6 +234,7 @@ api.get('/notifications', asyncHandler(telegram.notifications));
 // ---------- payments / dashboard ----------
 api.get('/payments', asyncHandler(payments.list));
 api.get('/dashboard/stats', asyncHandler(dashboard.stats));
+api.get('/dashboard/today', asyncHandler(dashboard.today));
 
 // ---------- feedback (emailed to product owner) ----------
 api.post(
