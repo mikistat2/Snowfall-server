@@ -65,6 +65,9 @@ export async function runAbsenceNudges(now = new Date()): Promise<void> {
   for (const gym of await gymModel.listAll()) {
     if (!botManager.getBot(gym.id)) continue;
     const settings = gymModel.getSettings(gym);
+    // No camera → no check-ins are recorded, so "days away" is meaningless and
+    // every member would look absent. Skip absence nudges for camera-less gyms.
+    if (settings.camera_enabled === false) continue;
     const lastVisits = await checkInModel.lastCheckInPerMember(gym.id);
 
     const members = await db('members')
