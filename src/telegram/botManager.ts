@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Bot, GrammyError } from 'grammy';
 import * as gymModel from '../models/gymModel';
 import * as memberModel from '../models/memberModel';
 import * as userModel from '../models/userModel';
@@ -11,6 +11,12 @@ import * as templates from './templates';
  *   /start <token>  — one-time deep-link binding for members ("m<token>")
  *                     and owners/staff ("a<token>")
  *   /traffic        — current occupancy + quiet/moderate/busy label
+ *
+ * Telegram allows only ONE getUpdates poll per token. If another instance is
+ * polling the same token (e.g. a second deploy, or an old instance still
+ * shutting down) we get a 409 Conflict and polling stops. Instead of giving up,
+ * we retry with exponential backoff, so the surviving instance reconnects
+ * automatically once the token is free again — no redeploy needed.
  */
 
 interface BotEntry {
@@ -19,8 +25,20 @@ interface BotEntry {
   gymId: number;
 }
 
+/** A gym that SHOULD be running (intent), so retries know whether to continue. */
+interface Desired {
+  token: string;
+  gymName: string;
+}
+
 const bots = new Map<number, BotEntry>();
 const startErrors = new Map<number, string>();
+const desired = new Map<number, Desired>();
+const retryTimers = new Map<number, NodeJS.Timeout>();
+const retryAttempts = new Map<number, number>();
+
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 60_000;
 
 export function getBot(gymId: number): BotEntry | undefined {
   return bots.get(gymId);
@@ -34,15 +52,71 @@ export function getStatus(gymId: number): {
 } {
   const entry = bots.get(gymId);
   return {
-    configured: entry !== undefined || startErrors.has(gymId),
+    configured: entry !== undefined || startErrors.has(gymId) || desired.has(gymId),
     running: entry !== undefined,
     username: entry?.username ?? null,
     error: startErrors.get(gymId) ?? null,
   };
 }
 
+/** Stop the live bot but keep the "desired" intent (so retries continue). */
+async function stopRunning(gymId: number): Promise<void> {
+  const entry = bots.get(gymId);
+  if (!entry) return;
+  bots.delete(gymId);
+  try {
+    await entry.bot.stop();
+  } catch {
+    /* already stopped */
+  }
+}
+
+function cancelRetry(gymId: number): void {
+  const timer = retryTimers.get(gymId);
+  if (timer) {
+    clearTimeout(timer);
+    retryTimers.delete(gymId);
+  }
+  retryAttempts.delete(gymId);
+}
+
+function scheduleRetry(gymId: number): void {
+  if (retryTimers.has(gymId)) return; // one pending retry at a time
+  const attempt = (retryAttempts.get(gymId) ?? 0) + 1;
+  retryAttempts.set(gymId, attempt);
+  const delay = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_MAX_MS);
+  // eslint-disable-next-line no-console
+  console.log(`[telegram] gym ${gymId} will reconnect in ${delay / 1000}s (attempt ${attempt})`);
+  const timer = setTimeout(() => {
+    retryTimers.delete(gymId);
+    const want = desired.get(gymId);
+    if (want) void startBotForGym(gymId, want.token, want.gymName);
+  }, delay);
+  retryTimers.set(gymId, timer);
+}
+
+function handleFailure(gymId: number, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  bots.delete(gymId);
+  startErrors.set(gymId, message);
+
+  // A 401 means the token itself is wrong — retrying can never fix that.
+  if (err instanceof GrammyError && err.error_code === 401) {
+    // eslint-disable-next-line no-console
+    console.error(`[telegram] gym ${gymId} invalid token — not retrying: ${message}`);
+    cancelRetry(gymId);
+    return;
+  }
+
+  // 409 (conflict) or a network blip — keep trying while this gym is desired.
+  // eslint-disable-next-line no-console
+  console.error(`[telegram] gym ${gymId} polling stopped: ${message}`);
+  if (desired.has(gymId)) scheduleRetry(gymId);
+}
+
 export async function startBotForGym(gymId: number, token: string, gymName: string): Promise<void> {
-  await stopBot(gymId);
+  desired.set(gymId, { token, gymName }); // record intent BEFORE any await
+  await stopRunning(gymId);
   startErrors.delete(gymId);
 
   const bot = new Bot(token);
@@ -85,38 +159,29 @@ export async function startBotForGym(gymId: number, token: string, gymName: stri
   try {
     const me = await bot.api.getMe();
     bots.set(gymId, { bot, username: me.username, gymId });
-    // long polling runs until stop(); don't await
-    void bot.start({ drop_pending_updates: true }).catch((err: Error) => {
-      // eslint-disable-next-line no-console
-      console.error(`[telegram] gym ${gymId} polling stopped:`, err.message);
-      bots.delete(gymId);
-      startErrors.set(gymId, err.message);
+    cancelRetry(gymId); // connected cleanly — reset backoff
+    // long polling runs until stop(); don't await. On failure, retry.
+    void bot.start({ drop_pending_updates: true }).catch((err: unknown) => {
+      handleFailure(gymId, err);
     });
     // eslint-disable-next-line no-console
     console.log(`[telegram] gym ${gymId} bot @${me.username} started`);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'invalid token';
-    startErrors.set(gymId, message);
-    // eslint-disable-next-line no-console
-    console.error(`[telegram] gym ${gymId} bot failed to start: ${message}`);
+    handleFailure(gymId, err);
   }
 }
 
+/** External stop: clears intent and any pending retry, then stops the bot. */
 export async function stopBot(gymId: number): Promise<void> {
-  const entry = bots.get(gymId);
-  if (!entry) return;
-  bots.delete(gymId);
-  try {
-    await entry.bot.stop();
-  } catch {
-    /* already stopped */
-  }
+  desired.delete(gymId);
+  startErrors.delete(gymId);
+  cancelRetry(gymId);
+  await stopRunning(gymId);
 }
 
 /** Called on settings save when the token changed. */
 export async function restartBot(gymId: number, token: string | null): Promise<void> {
   if (!token) {
-    startErrors.delete(gymId);
     await stopBot(gymId);
     return;
   }
