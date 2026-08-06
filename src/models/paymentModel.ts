@@ -32,7 +32,7 @@ export async function create(
 
 export async function list(
   gymId: number,
-  filter: { from?: string; to?: string; method?: PaymentMethod; member_id?: number } = {},
+  filter: { from?: string; to?: string; method?: PaymentMethod; member_id?: number; offset?: number } = {},
   limit = 200,
 ): Promise<(PaymentRow & { member_name: string; marked_by_name: string })[]> {
   const q = db('payments as pay')
@@ -46,6 +46,7 @@ export async function list(
   if (filter.to) q.andWhere('pay.created_at', '<', `${filter.to}T23:59:59.999`);
   if (filter.method) q.andWhere('pay.method', filter.method);
   if (filter.member_id) q.andWhere('pay.member_id', filter.member_id);
+  if (filter.offset != null) q.offset(filter.offset);
   return q;
 }
 

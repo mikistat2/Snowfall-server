@@ -9,9 +9,14 @@ export interface MemberInput {
   photo_url?: string | null;
 }
 
+/**
+ * `limit`/`offset` are optional: the desktop table asks for everything, the
+ * mobile list pages through. Ordering is by name, which is stable, so paging
+ * cannot skip or repeat a row between requests.
+ */
 export async function listByGym(
   gymId: number,
-  filter: { search?: string; status?: MemberStatus } = {},
+  filter: { search?: string; status?: MemberStatus; limit?: number; offset?: number } = {},
 ): Promise<(MemberRow & { plan_name: string | null; expires_at: Date | null })[]> {
   const q = db('members as m')
     .where('m.gym_id', gymId)
@@ -33,6 +38,8 @@ export async function listByGym(
       b.whereILike('m.full_name', `%${filter.search}%`).orWhereILike('m.phone', `%${filter.search}%`),
     );
   }
+  if (filter.limit != null) q.limit(filter.limit);
+  if (filter.offset != null) q.offset(filter.offset);
   return q;
 }
 

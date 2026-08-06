@@ -4,6 +4,7 @@ import * as memberService from '../services/memberService';
 import * as paymentService from '../services/paymentService';
 import * as auditLogModel from '../models/auditLogModel';
 import { notFound } from '../utils/errors';
+import { parseLimit, parseOffset } from '../utils/pagination';
 import type { MemberStatus } from '../types';
 
 export async function list(req: Request, res: Response): Promise<void> {
@@ -11,6 +12,8 @@ export async function list(req: Request, res: Response): Promise<void> {
     await memberModel.listByGym(req.auth.gymId, {
       search: req.query.search as string | undefined,
       status: req.query.status as MemberStatus | undefined,
+      limit: parseLimit(req.query.limit),
+      offset: parseOffset(req.query.offset),
     }),
   );
 }
