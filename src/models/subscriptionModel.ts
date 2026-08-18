@@ -79,7 +79,7 @@ export async function listLatestWithMemberForGym(gymId: number): Promise<
     full_name: string;
     telegram_chat_id: number | null;
     member_status: string;
-    expires_at: Date;
+    expires_at: string;
     sub_status: SubscriptionStatus;
   }[]
 > {
@@ -102,7 +102,7 @@ export async function listLatestWithMemberForGym(gymId: number): Promise<
 /** All non-frozen members of a gym with their latest subscription (for status recompute). */
 export async function listLatestForGym(
   gymId: number,
-): Promise<{ member_id: number; member_status: string; subscription_id: number; expires_at: Date; sub_status: SubscriptionStatus }[]> {
+): Promise<{ member_id: number; member_status: string; subscription_id: number; expires_at: string; sub_status: SubscriptionStatus }[]> {
   return db('subscriptions as s')
     .distinctOn('s.member_id')
     .join('members as m', 'm.id', 's.member_id')

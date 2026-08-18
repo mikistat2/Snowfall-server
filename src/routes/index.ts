@@ -100,6 +100,32 @@ const previousMemberSchema = z.object({
     .optional(),
 });
 
+/**
+ * Admin correction of an existing member — a patch, so every key is optional
+ * and an absent one means "leave it alone".
+ *
+ * Wider than `memberInfoSchema`: phone and sex are nullable here because
+ * clearing a wrong value is as much a correction as typing a right one, and the
+ * dates a member was created with are editable too. `subscription` rewrites the
+ * member's current period in place; it never takes a payment.
+ */
+const memberUpdateSchema = z
+  .object({
+    full_name: z.string().min(2).optional(),
+    phone: z.string().nullable().optional(),
+    sex: z.enum(['male', 'female']).nullable().optional(),
+    photo_url: z.string().nullable().optional(),
+    joined_at: dateOnlyString.optional(),
+    subscription: z
+      .object({
+        plan_id: z.number().int().positive().optional(),
+        starts_at: dateOnlyString.optional(),
+        expires_at: dateOnlyString.optional(),
+      })
+      .optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
+
 const renewSchema = z.object({
   plan_id: z.number().int().positive(),
   amount: z.number().nonnegative().optional(),
@@ -265,7 +291,7 @@ api.get('/members/export', asyncHandler(members.exportData)); // before /members
 api.post('/members', validate(enrollSchema), asyncHandler(members.enroll));
 api.post('/members/previous', validate(previousMemberSchema), asyncHandler(members.enrollPrevious));
 api.get('/members/:id', asyncHandler(members.detail));
-api.put('/members/:id', validate(memberInfoSchema.partial()), asyncHandler(members.update));
+api.put('/members/:id', validate(memberUpdateSchema), asyncHandler(members.update));
 api.post(
   '/members/:id/descriptors',
   validate(z.object({ descriptors: z.array(descriptor).min(1).max(5), replace: z.boolean().optional() })),

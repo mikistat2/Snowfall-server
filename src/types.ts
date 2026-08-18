@@ -184,8 +184,9 @@ export interface SubscriptionRow {
   gym_id: number;
   member_id: number;
   plan_id: number;
-  starts_at: Date;
-  expires_at: Date;
+  /** Postgres DATE — read back as a plain "YYYY-MM-DD" string (see db/knex.ts). */
+  starts_at: string;
+  expires_at: string;
   frozen_at: Date | null;
   frozen_days_remaining: number | null;
   status: SubscriptionStatus;

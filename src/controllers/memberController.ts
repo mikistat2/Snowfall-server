@@ -2,8 +2,7 @@ import type { Request, Response } from 'express';
 import * as memberModel from '../models/memberModel';
 import * as memberService from '../services/memberService';
 import * as paymentService from '../services/paymentService';
-import * as auditLogModel from '../models/auditLogModel';
-import { notFound } from '../utils/errors';
+import { forbidden, notFound } from '../utils/errors';
 import { parseLimit, parseOffset } from '../utils/pagination';
 import type { MemberStatus } from '../types';
 
@@ -58,17 +57,49 @@ export async function enrollPrevious(req: Request, res: Response): Promise<void>
   res.status(201).json(member);
 }
 
+/**
+ * Admin correction of a member.
+ *
+ * The body is a patch: only the keys that were sent are touched, so the modal
+ * can post the contact fields alone and leave the dates exactly as they are.
+ * `member.*` is flat at the top level for backwards compatibility with the
+ * original name/phone-only endpoint; the dates arrive under their own keys.
+ *
+ * Everything is Gregorian by the time it gets here — the client's date field
+ * converts as you type, the same way the previous-member form does.
+ */
 export async function update(req: Request, res: Response): Promise<void> {
-  const member = await memberModel.update(req.auth.gymId, Number(req.params.id), req.body);
-  if (!member) throw notFound('Member not found');
-  await auditLogModel.log({
-    gym_id: req.auth.gymId,
-    user_id: req.auth.sub,
-    action: 'member.updated',
-    entity: 'member',
-    entity_id: member.id,
+  const { joined_at, subscription, ...member } = req.body as {
+    full_name?: string;
+    phone?: string | null;
+    sex?: 'male' | 'female' | null;
+    photo_url?: string | null;
+    joined_at?: string;
+    subscription?: { plan_id?: number; starts_at?: string; expires_at?: string };
+  };
+
+  // Moving an expiry date hands out gym time without a payment behind it, so it
+  // sits with the other owner-only actions (archive, delete, the audit log).
+  // Correcting a name or a phone number stays open to staff at the desk.
+  if (subscription && req.auth.role !== 'owner') {
+    throw forbidden('Only the owner can change a membership’s plan or dates');
+  }
+
+  const updated = await memberService.updateMember({
+    gymId: req.auth.gymId,
+    userId: req.auth.sub,
+    memberId: Number(req.params.id),
+    member: Object.keys(member).length > 0 ? member : undefined,
+    joinedAt: joined_at,
+    subscription: subscription
+      ? {
+          planId: subscription.plan_id,
+          startsAt: subscription.starts_at,
+          expiresAt: subscription.expires_at,
+        }
+      : undefined,
   });
-  res.json(member);
+  res.json(updated);
 }
 
 /** All descriptors for the gym — the monitor page's recognition cache. */

@@ -17,7 +17,7 @@ export interface MemberInput {
 export async function listByGym(
   gymId: number,
   filter: { search?: string; status?: MemberStatus; archived?: boolean; limit?: number; offset?: number } = {},
-): Promise<(MemberRow & { plan_name: string | null; expires_at: Date | null })[]> {
+): Promise<(MemberRow & { plan_name: string | null; expires_at: string | null })[]> {
   const q = db('members as m')
     .where('m.gym_id', gymId)
     // archived members are off the roster: they surface only when asked for by
@@ -112,7 +112,7 @@ export async function findById(gymId: number, id: number, trx: Knex = db): Promi
  */
 export async function create(
   gymId: number,
-  data: MemberInput & { joined_at?: string },
+  data: MemberInput & { joined_at?: string | Date },
   trx: Knex = db,
 ): Promise<MemberRow> {
   const [row] = await trx('members').insert({ ...data, gym_id: gymId }).returning('*');
@@ -122,7 +122,7 @@ export async function create(
 export async function update(
   gymId: number,
   id: number,
-  data: Partial<MemberInput>,
+  data: Partial<MemberInput> & { joined_at?: string | Date },
   trx: Knex = db,
 ): Promise<MemberRow | undefined> {
   const [row] = await trx('members').where({ gym_id: gymId, id }).update(data).returning('*');

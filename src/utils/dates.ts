@@ -39,3 +39,29 @@ export function isWithinHours(window: string, now: Date): boolean {
 export function formatTime(d: Date): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+
+/**
+ * A date-only value on its way into a TIMESTAMPTZ column (`members.joined_at`).
+ *
+ * Midnight is the wrong instant to store: Postgres reads a bare "2026-06-01" in
+ * the session's timezone and the JSON that comes back out is UTC, so the
+ * calendar day can land on either side of the boundary depending on where the
+ * server runs. Noon UTC is at least twelve hours from every timezone edge, so
+ * the day survives the round-trip everywhere.
+ */
+export function dateAtNoonUtc(value: string | Date): Date {
+  const iso = typeof value === 'string' ? value.slice(0, 10) : dateOnly(value);
+  return new Date(`${iso}T12:00:00.000Z`);
+}
+
+/**
+ * The calendar day of a TIMESTAMPTZ *as the client will see it*.
+ *
+ * `dateOnly` reads a timestamp in the server's local timezone, but the same
+ * value reaches the browser as a UTC ISO string that the client slices to ten
+ * characters. Reading it back in UTC is what keeps the two ends agreeing about
+ * which day `members.joined_at` falls on, wherever the API happens to run.
+ */
+export function dateOnlyUtc(value: Date | string): string {
+  return new Date(value).toISOString().slice(0, 10);
+}
