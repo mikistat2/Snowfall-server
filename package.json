@@ -16,6 +16,20 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "_comment_types_express": [
+    "@types/multer declares a dependency on @types/express '*', which now resolves",
+    "to the Express 5 typings. Installed alongside our Express 4 typings it produces a",
+    "second, nested copy, and multer's RequestHandler stops matching our router's",
+    "(PathParams vs string) — a build that only fails on a fresh, lockfile-less install.",
+    "Both fields pin one Express 4 copy for the whole tree: resolutions for yarn (Render),",
+    "overrides for npm (local). Remove them when the server moves to Express 5."
+  ],
+  "resolutions": {
+    "@types/express": "^4.17.21"
+  },
+  "overrides": {
+    "@types/express": "^4.17.21"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
