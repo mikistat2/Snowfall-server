@@ -15,6 +15,7 @@ export async function create(
     is_trial?: boolean;
     approved_at?: Date | null;
     subscription_ends_at?: Date | null;
+    comped?: boolean;
   },
   trx: Knex = db,
 ): Promise<GymRow> {
@@ -46,4 +47,9 @@ export function getSettings(gym: GymRow): GymSettings {
 
 export async function listAll(): Promise<GymRow[]> {
   return db('gyms').select('*');
+}
+
+/** Permanent exemption from the subscription paywall (see billingService.hasAccess). */
+export async function setComped(id: number, comped: boolean): Promise<void> {
+  await db('gyms').where({ id }).update({ comped });
 }

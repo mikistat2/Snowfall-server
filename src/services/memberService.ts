@@ -8,6 +8,7 @@ import * as auditLogModel from '../models/auditLogModel';
 import { recomputeMemberStatus } from './statusService';
 import { clearDebounce } from './checkInService';
 import { addDays, dateOnly, daysBetween } from '../utils/dates';
+import { toGregorianDateOnly, type CalendarSystem } from '../utils/ethiopian';
 import { badRequest, notFound } from '../utils/errors';
 import type { MemberRow, PaymentMethod } from '../types';
 
@@ -82,6 +83,129 @@ export async function enroll(input: {
   });
 }
 
+/**
+ * Back-fill a member who was already training before the system was installed.
+ *
+ * Differences from `enroll`, all of them consequences of the record coming off
+ * a paper register rather than from someone standing at the desk:
+ *  - the dates are given, not "today" — and may be written in the Ethiopian
+ *    calendar, so they are converted here before anything is stored;
+ *  - the subscription period is the one already running (or already over), so
+ *    an overdue paper member lands as `grace`/`expired` on the very first
+ *    status recompute and is refused at the door until someone renews them;
+ *  - the payment is historical and optional: it is stamped with the date it was
+ *    actually taken, so back-filling a hundred members cannot fake a spike in
+ *    this month's revenue;
+ *  - face captures are optional, since the member is rarely present while their
+ *    paper record is being typed in.
+ */
+export async function enrollPrevious(input: {
+  gymId: number;
+  userId: number;
+  member: { full_name: string; phone?: string; sex?: 'male' | 'female'; photo_url?: string | null };
+  descriptors: number[][];
+  planId: number;
+  calendar: CalendarSystem;
+  /** What the clerk was reading, for the audit log — never used for conversion. */
+  enteredCalendar?: CalendarSystem;
+  /** All three are "YYYY-MM-DD" written in `calendar`. */
+  joinedAt: string;
+  startsAt: string;
+  expiresAt?: string;
+  payment?: { amount?: number; method: PaymentMethod; note?: string };
+}): Promise<MemberRow> {
+  const gym = await gymModel.findById(input.gymId);
+  if (!gym) throw notFound('Gym not found');
+  const settings = gymModel.getSettings(gym);
+
+  if (input.descriptors.some((d) => d.length !== 128)) {
+    throw badRequest('Each face descriptor must have 128 values');
+  }
+
+  const convert = (value: string, field: string): string => {
+    const gregorian = toGregorianDateOnly(value, input.calendar);
+    if (!gregorian) throw badRequest(`${field} is not a valid ${input.calendar} date`);
+    return gregorian;
+  };
+
+  const joinedAt = convert(input.joinedAt, 'Registration date');
+  const startsAt = convert(input.startsAt, 'Membership start date');
+  const expiresOverride = input.expiresAt ? convert(input.expiresAt, 'Expiry date') : undefined;
+
+  // A paper record is history: a future join date means the calendar toggle was
+  // wrong (Ethiopian years read ~8 ahead), which is worth catching loudly.
+  const today = dateOnly(new Date());
+  if (daysBetween(today, joinedAt) > 0) throw badRequest('Registration date cannot be in the future');
+  if (daysBetween(joinedAt, startsAt) < 0) {
+    throw badRequest('Membership start date cannot be before the registration date');
+  }
+  if (expiresOverride && daysBetween(startsAt, expiresOverride) < 0) {
+    throw badRequest('Expiry date cannot be before the membership start date');
+  }
+
+  return db.transaction(async (trx) => {
+    const plan = await planModel.findById(input.gymId, input.planId);
+    if (!plan || !plan.active) throw badRequest('Plan not found or inactive');
+
+    const member = await memberModel.create(input.gymId, { ...input.member, joined_at: joinedAt }, trx);
+    if (input.descriptors.length > 0) {
+      await memberModel.addDescriptors(member.id, input.descriptors, trx);
+    }
+
+    const expiresAt = expiresOverride ?? addDays(startsAt, plan.duration_days);
+    const subscription = await subscriptionModel.create(
+      {
+        gym_id: input.gymId,
+        member_id: member.id,
+        plan_id: plan.id,
+        starts_at: startsAt,
+        expires_at: expiresAt,
+      },
+      trx,
+    );
+
+    if (input.payment) {
+      await paymentModel.create(
+        {
+          gym_id: input.gymId,
+          member_id: member.id,
+          subscription_id: subscription.id,
+          amount: input.payment.amount ?? Number(plan.price),
+          method: input.payment.method,
+          marked_by: input.userId,
+          note: input.payment.note ?? 'Previous member (paper record)',
+          created_at: startsAt,
+        },
+        trx,
+      );
+    }
+
+    const status = await recomputeMemberStatus(member.id, settings, trx);
+    await auditLogModel.log(
+      {
+        gym_id: input.gymId,
+        user_id: input.userId,
+        action: 'member.enrolled_previous',
+        entity: 'member',
+        entity_id: member.id,
+        meta: {
+          plan_id: plan.id,
+          descriptors: input.descriptors.length,
+          calendar: input.calendar,
+          entered_calendar: input.enteredCalendar ?? input.calendar,
+          // what was typed off the paper, alongside what it was stored as
+          entered: { joined_at: input.joinedAt, starts_at: input.startsAt, expires_at: input.expiresAt ?? null },
+          stored: { joined_at: joinedAt, starts_at: startsAt, expires_at: expiresAt },
+          payment_recorded: Boolean(input.payment),
+        },
+      },
+      trx,
+    );
+
+    return { ...member, status };
+  });
+}
+
 /** Freeze: remember how many days are left; expiry stops mattering until unfreeze. */
 export async function freeze(gymId: number, memberId: number, userId: number): Promise<void> {
   const member = await memberModel.findById(gymId, memberId);
@@ -129,6 +253,98 @@ export async function unfreeze(gymId: number, memberId: number, userId: number):
     );
   });
   clearDebounce(gymId, memberId); // allow at the door immediately
+}
+
+/**
+ * Take a member off the roster without touching their money.
+ *
+ * They vanish from the members list, the door monitor's recognition cache, the
+ * status cron and the reminder jobs, but every payment they ever made stays
+ * exactly where it is — which is the only way to remove a paying member without
+ * rewriting past revenue.
+ */
+export async function archive(gymId: number, memberId: number, userId: number): Promise<MemberRow> {
+  const member = await memberModel.findById(gymId, memberId);
+  if (!member) throw notFound('Member not found');
+  if (member.archived_at) throw badRequest('Member is already archived');
+
+  const updated = await memberModel.setArchived(gymId, memberId, true);
+  await auditLogModel.log({
+    gym_id: gymId,
+    user_id: userId,
+    action: 'member.archived',
+    entity: 'member',
+    entity_id: memberId,
+    meta: { full_name: member.full_name },
+  });
+  clearDebounce(gymId, memberId); // deny at the door immediately
+  return updated as MemberRow;
+}
+
+/** Put an archived member back on the roster, with their status recomputed. */
+export async function restore(gymId: number, memberId: number, userId: number): Promise<MemberRow> {
+  const gym = await gymModel.findById(gymId);
+  if (!gym) throw notFound('Gym not found');
+  const member = await memberModel.findById(gymId, memberId);
+  if (!member) throw notFound('Member not found');
+  if (!member.archived_at) throw badRequest('Member is not archived');
+
+  const updated = await db.transaction(async (trx) => {
+    const row = await memberModel.setArchived(gymId, memberId, false, trx);
+    // the nightly cron skipped them while archived, so their stored status is
+    // as stale as the day they left
+    await recomputeMemberStatus(memberId, gymModel.getSettings(gym), trx);
+    return row;
+  });
+
+  await auditLogModel.log({
+    gym_id: gymId,
+    user_id: userId,
+    action: 'member.restored',
+    entity: 'member',
+    entity_id: memberId,
+    meta: { full_name: member.full_name },
+  });
+  clearDebounce(gymId, memberId);
+  return (await memberModel.findById(gymId, memberId)) ?? (updated as MemberRow);
+}
+
+/**
+ * Permanent deletion — only for a member with no payment history, which in
+ * practice means a mistake: a duplicate or a mistyped row from back-filling the
+ * paper register. Anyone who has ever paid must be archived instead, because
+ * `payments` is an immutable audit trail and deleting from it would silently
+ * change past revenue figures.
+ */
+export async function remove(gymId: number, memberId: number, userId: number): Promise<void> {
+  const member = await memberModel.findById(gymId, memberId);
+  if (!member) throw notFound('Member not found');
+
+  const payments = await memberModel.paymentCount(memberId);
+  if (payments > 0) {
+    throw badRequest(
+      `This member has ${payments} recorded payment${payments === 1 ? '' : 's'}. ` +
+        'Deleting them would change past income records — archive them instead.',
+    );
+  }
+
+  await db.transaction(async (trx) => {
+    await memberModel.hardDelete(gymId, memberId, trx);
+    // the member row is gone, so the log keeps the name: entity_id alone would
+    // point at nothing
+    await auditLogModel.log(
+      {
+        gym_id: gymId,
+        user_id: userId,
+        action: 'member.deleted',
+        entity: 'member',
+        entity_id: memberId,
+        meta: { full_name: member.full_name, phone: member.phone, joined_at: member.joined_at },
+      },
+      trx,
+    );
+  });
+  clearDebounce(gymId, memberId);
 }
 
 /** Full member detail for the member page. */

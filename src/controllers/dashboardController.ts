@@ -18,12 +18,14 @@ export async function stats(req: Request, res: Response): Promise<void> {
       db('subscriptions as s')
         .join('members as m', 'm.id', 's.member_id')
         .where('s.gym_id', gymId)
+        .whereNull('m.archived_at')
         .whereNot('s.status', 'frozen')
         .whereBetween('s.expires_at', [now, in7days])
         .countDistinct<{ count: string }>('s.member_id as count')
         .first(),
       db('members')
         .where({ gym_id: gymId })
+        .whereNull('archived_at')
         .select('status')
         .count('id as count')
         .groupBy('status'),
@@ -61,7 +63,7 @@ export async function today(req: Request, res: Response): Promise<void> {
         SELECT pl.name FROM subscriptions s JOIN plans pl ON pl.id = s.plan_id
         WHERE s.member_id = m.id ORDER BY s.created_at DESC LIMIT 1
       ) p ON TRUE
-      WHERE m.gym_id = ? AND m.created_at >= ?
+      WHERE m.gym_id = ? AND m.created_at >= ? AND m.archived_at IS NULL
       ORDER BY m.created_at DESC
     `,
       [gymId, startOfDay],
@@ -81,6 +83,7 @@ export async function today(req: Request, res: Response): Promise<void> {
       FROM latest l
       JOIN members m ON m.id = l.member_id
       WHERE m.status <> 'frozen'
+        AND m.archived_at IS NULL
         AND l.expires_at BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE + 7
       ORDER BY l.expires_at, m.full_name
     `,

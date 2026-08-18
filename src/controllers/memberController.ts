@@ -12,6 +12,7 @@ export async function list(req: Request, res: Response): Promise<void> {
     await memberModel.listByGym(req.auth.gymId, {
       search: req.query.search as string | undefined,
       status: req.query.status as MemberStatus | undefined,
+      archived: req.query.archived === 'true',
       limit: parseLimit(req.query.limit),
       offset: parseOffset(req.query.offset),
     }),
@@ -34,6 +35,24 @@ export async function enroll(req: Request, res: Response): Promise<void> {
     member: req.body.member,
     descriptors: req.body.descriptors ?? [],
     planId: req.body.plan_id,
+    payment: req.body.payment,
+  });
+  res.status(201).json(member);
+}
+
+/** Back-fill of a member from the gym's pre-installation paper register. */
+export async function enrollPrevious(req: Request, res: Response): Promise<void> {
+  const member = await memberService.enrollPrevious({
+    gymId: req.auth.gymId,
+    userId: req.auth.sub,
+    member: req.body.member,
+    descriptors: req.body.descriptors ?? [],
+    planId: req.body.plan_id,
+    calendar: req.body.calendar,
+    enteredCalendar: req.body.entered_calendar,
+    joinedAt: req.body.joined_at,
+    startsAt: req.body.starts_at,
+    expiresAt: req.body.expires_at,
     payment: req.body.payment,
   });
   res.status(201).json(member);
@@ -78,6 +97,21 @@ export async function renew(req: Request, res: Response): Promise<void> {
       userId: req.auth.sub,
     }),
   );
+}
+
+/** Off the roster, money history intact. */
+export async function archive(req: Request, res: Response): Promise<void> {
+  res.json(await memberService.archive(req.auth.gymId, Number(req.params.id), req.auth.sub));
+}
+
+export async function restore(req: Request, res: Response): Promise<void> {
+  res.json(await memberService.restore(req.auth.gymId, Number(req.params.id), req.auth.sub));
+}
+
+/** Permanent — refused (400) for anyone who has ever paid. */
+export async function remove(req: Request, res: Response): Promise<void> {
+  await memberService.remove(req.auth.gymId, Number(req.params.id), req.auth.sub);
+  res.json({ deleted: true });
 }
 
 export async function freeze(req: Request, res: Response): Promise<void> {

@@ -32,39 +32,15 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isMailConfigured = isMailConfigured;
+exports.isMailConfigured = void 0;
 exports.sendFeedback = sendFeedback;
-const nodemailer_1 = __importDefault(require("nodemailer"));
 const env_1 = require("../config/env");
 const gymModel = __importStar(require("../models/gymModel"));
 const userModel = __importStar(require("../models/userModel"));
 const errors_1 = require("../utils/errors");
-/**
- * Sends gym feedback straight to the product owner's inbox via Gmail SMTP.
- * Gym name + submitter contact are looked up server-side (not trusted from
- * the client) and attached, and reply-to is set to the submitter so replies
- * go back to the gym directly.
- *
- * Requires SMTP_USER + SMTP_PASS (a Gmail address + App Password) in the
- * server env; otherwise sending is disabled and the endpoint reports it.
- */
-let transporter = null;
-function getTransport() {
-    if (!env_1.env.mail.user || !env_1.env.mail.pass)
-        return null;
-    transporter ??= nodemailer_1.default.createTransport({
-        service: 'gmail',
-        auth: { user: env_1.env.mail.user, pass: env_1.env.mail.pass },
-    });
-    return transporter;
-}
-function isMailConfigured() {
-    return getTransport() !== null;
-}
+const mailer_1 = require("./mailer");
+Object.defineProperty(exports, "isMailConfigured", { enumerable: true, get: function () { return mailer_1.isMailConfigured; } });
 const CATEGORY_LABELS = {
     suggestion: 'Suggestion',
     bug: 'Bug report',
@@ -72,7 +48,7 @@ const CATEGORY_LABELS = {
     other: 'Other',
 };
 async function sendFeedback(input) {
-    const transport = getTransport();
+    const transport = (0, mailer_1.getTransport)();
     if (!transport) {
         throw (0, errors_1.badRequest)('Feedback email is not configured on the server (set SMTP_USER and SMTP_PASS).', 'mail_not_configured');
     }

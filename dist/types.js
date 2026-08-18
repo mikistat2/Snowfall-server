@@ -9,5 +9,6 @@ exports.DEFAULT_SETTINGS = {
     match_threshold: 0.5,
     closing_time: '22:00',
     entry_mode: 'auto',
+    camera_enabled: true,
 };
 //# sourceMappingURL=types.js.map

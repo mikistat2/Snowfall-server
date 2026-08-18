@@ -47,12 +47,96 @@ export interface GymRow {
   approved_at: string | null;
   subscription_ends_at: string | null;
   is_trial: boolean;
+  payment_reason_code: string | null;
+  billing_plan_id: number | null;
+  billing_cycle: BillingCycle | null;
+  comped: boolean;
 }
 
 /** Single-row global platform configuration (see platform_settings table). */
 export interface PlatformSettings {
   trial_mode: boolean;
   trial_days: number;
+}
+
+// ---------------------------------------------------------------- billing --
+// Gyms paying the platform by verified bank/wallet transfer.
+
+export type BillingCycle = 'MONTHLY' | 'YEARLY';
+export type BillingProvider = 'CBE' | 'TELEBIRR' | 'CASH';
+export type BillingSource = 'MANUAL' | 'IMAGE' | 'ADMIN';
+export type BillingStatus = 'PENDING' | 'VERIFIED' | 'REJECTED';
+
+/**
+ * `warn` is recorded on the row and shown to the admin but does not reject;
+ * `skip` means there was nothing to compare against. Only `fail` rejects.
+ */
+export type CheckState = 'pass' | 'fail' | 'warn' | 'skip';
+
+export interface PaymentCheck {
+  key: string;
+  label: string;
+  state: CheckState;
+  expected: string | null;
+  actual: string | null;
+  message: string;
+}
+
+export interface BillingPlanRow {
+  id: number;
+  name: string;
+  description: string | null;
+  monthly_price: string; // NUMERIC comes back as string
+  yearly_price: string;
+  currency: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface BillingSettings {
+  payments_required: boolean;
+  cbe_enabled: boolean;
+  cbe_account_number: string | null;
+  cbe_account_name: string | null;
+  telebirr_enabled: boolean;
+  telebirr_phone: string | null;
+  telebirr_account_name: string | null;
+  currency: string;
+  receipt_max_age_days: number;
+  grace_days: number;
+  instructions: string | null;
+}
+
+export interface BillingPaymentRow {
+  id: number;
+  gym_id: number;
+  billing_plan_id: number | null;
+  provider: BillingProvider;
+  source: BillingSource;
+  status: BillingStatus;
+  reference: string | null;
+  reason_code: string | null;
+  verified_reference: string | null;
+  selected_cycle: BillingCycle | null;
+  granted_cycle: BillingCycle | null;
+  amount: string | null;
+  currency: string | null;
+  expected_amount: string | null;
+  payer_name: string | null;
+  payer_account: string | null;
+  receiver_name: string | null;
+  receiver_account: string | null;
+  transaction_at: Date | null;
+  period_start: Date | null;
+  period_end: Date | null;
+  failure_reason: string | null;
+  warnings: string[] | null;
+  checks: PaymentCheck[] | null;
+  raw_response?: unknown;
+  recorded_by: string | null;
+  note: string | null;
+  verified_at: Date | null;
+  created_at: Date;
 }
 
 export interface UserRow {
@@ -91,6 +175,8 @@ export interface MemberRow {
   photo_url: string | null;
   status: MemberStatus;
   joined_at: Date;
+  /** Set = removed from the gym's active roster, but kept for their payment history. */
+  archived_at: Date | null;
 }
 
 export interface SubscriptionRow {

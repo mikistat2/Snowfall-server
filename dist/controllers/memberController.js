@@ -34,12 +34,17 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.list = list;
+exports.exportData = exportData;
 exports.detail = detail;
 exports.enroll = enroll;
+exports.enrollPrevious = enrollPrevious;
 exports.update = update;
 exports.allDescriptors = allDescriptors;
 exports.addDescriptors = addDescriptors;
 exports.renew = renew;
+exports.archive = archive;
+exports.restore = restore;
+exports.remove = remove;
 exports.freeze = freeze;
 exports.unfreeze = unfreeze;
 const memberModel = __importStar(require("../models/memberModel"));
@@ -47,11 +52,19 @@ const memberService = __importStar(require("../services/memberService"));
 const paymentService = __importStar(require("../services/paymentService"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
 const errors_1 = require("../utils/errors");
+const pagination_1 = require("../utils/pagination");
 async function list(req, res) {
     res.json(await memberModel.listByGym(req.auth.gymId, {
         search: req.query.search,
         status: req.query.status,
+        archived: req.query.archived === 'true',
+        limit: (0, pagination_1.parseLimit)(req.query.limit),
+        offset: (0, pagination_1.parseOffset)(req.query.offset),
     }));
+}
+/** Full data dump for the client-side PDF export. */
+async function exportData(req, res) {
+    res.json(await memberModel.exportByGym(req.auth.gymId));
 }
 async function detail(req, res) {
     res.json(await memberService.detail(req.auth.gymId, Number(req.params.id)));
@@ -63,6 +76,23 @@ async function enroll(req, res) {
         member: req.body.member,
         descriptors: req.body.descriptors ?? [],
         planId: req.body.plan_id,
+        payment: req.body.payment,
+    });
+    res.status(201).json(member);
+}
+/** Back-fill of a member from the gym's pre-installation paper register. */
+async function enrollPrevious(req, res) {
+    const member = await memberService.enrollPrevious({
+        gymId: req.auth.gymId,
+        userId: req.auth.sub,
+        member: req.body.member,
+        descriptors: req.body.descriptors ?? [],
+        planId: req.body.plan_id,
+        calendar: req.body.calendar,
+        enteredCalendar: req.body.entered_calendar,
+        joinedAt: req.body.joined_at,
+        startsAt: req.body.starts_at,
+        expiresAt: req.body.expires_at,
         payment: req.body.payment,
     });
     res.status(201).json(member);
@@ -104,6 +134,18 @@ async function renew(req, res) {
         note: req.body.note,
         userId: req.auth.sub,
     }));
+}
+/** Off the roster, money history intact. */
+async function archive(req, res) {
+    res.json(await memberService.archive(req.auth.gymId, Number(req.params.id), req.auth.sub));
+}
+async function restore(req, res) {
+    res.json(await memberService.restore(req.auth.gymId, Number(req.params.id), req.auth.sub));
+}
+/** Permanent — refused (400) for anyone who has ever paid. */
+async function remove(req, res) {
+    await memberService.remove(req.auth.gymId, Number(req.params.id), req.auth.sub);
+    res.json({ deleted: true });
 }
 async function freeze(req, res) {
     await memberService.freeze(req.auth.gymId, Number(req.params.id), req.auth.sub);

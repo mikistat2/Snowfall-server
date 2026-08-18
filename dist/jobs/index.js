@@ -45,6 +45,7 @@ const gymModel = __importStar(require("../models/gymModel"));
 const occupancyService = __importStar(require("../services/occupancyService"));
 const notificationService = __importStar(require("../services/notificationService"));
 const guestModel = __importStar(require("../models/guestModel"));
+const platformAlert = __importStar(require("../services/platformAlertService"));
 /**
  * Jobs:
  *  - 00:05 daily: recompute every member's status per gym.
@@ -95,6 +96,25 @@ function startJobs() {
         catch (err) {
             // eslint-disable-next-line no-console
             console.error('[jobs] closing summary failed', err);
+        }
+    });
+    // 08:00 daily: subscription reminders on the 30/14/7/3/1/0-days-left ladder
+    // — to the PLATFORM admin (all gyms, one digest) and, when the paywall is
+    // on, to each gym OWNER so they can renew themselves before being locked out.
+    node_cron_1.default.schedule('0 8 * * *', async () => {
+        try {
+            await platformAlert.runSubscriptionAlerts();
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[jobs] platform subscription alerts failed', err);
+        }
+        try {
+            await platformAlert.runOwnerRenewalReminders();
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[jobs] owner renewal reminders failed', err);
         }
     });
 }

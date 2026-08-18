@@ -48,7 +48,9 @@ export async function recognize(input: {
 
   if (input.memberId) {
     member = await memberModel.findById(input.gymId, input.memberId);
-    if (!member) throw notFound('Member not found');
+    // archived members are dropped from the descriptor cache, but a kiosk that
+    // has not refreshed its copy can still send the id
+    if (!member || member.archived_at) throw notFound('Member not found');
   } else if (!guestId && input.descriptor) {
     const match = await matchDescriptor(input.gymId, input.descriptor, settings.match_threshold);
     if (match?.memberId) {
@@ -179,6 +181,7 @@ export async function approve(gymId: number, memberId: number, userId: number): 
   const settings = gymModel.getSettings(gym);
   const member = await memberModel.findById(gymId, memberId);
   if (!member) throw notFound('Member not found');
+  if (member.archived_at) throw badRequest('This member is archived — restore them first');
 
   const open = await checkInModel.findOpenByMember(memberId);
   if (open) {
@@ -247,6 +250,7 @@ export async function approve(gymId: number, memberId: number, userId: number): 
 export async function override(gymId: number, memberId: number, userId: number): Promise<RecognizeResult> {
   const member = await memberModel.findById(gymId, memberId);
   if (!member) throw notFound('Member not found');
+  if (member.archived_at) throw badRequest('This member is archived — restore them first');
 
   const open = await checkInModel.findOpenByMember(memberId);
   if (open) {

@@ -42,6 +42,7 @@ async function listLatestWithMemberForGym(gymId) {
         .distinctOn('s.member_id')
         .join('members as m', 'm.id', 's.member_id')
         .where('s.gym_id', gymId)
+        .whereNull('m.archived_at') // no reminders to someone who left the gym
         .select('s.member_id', 'm.full_name', 'm.telegram_chat_id', 'm.status as member_status', 's.expires_at', 's.status as sub_status')
         .orderBy(['s.member_id', { column: 's.expires_at', order: 'desc' }]);
 }
@@ -51,6 +52,7 @@ async function listLatestForGym(gymId) {
         .distinctOn('s.member_id')
         .join('members as m', 'm.id', 's.member_id')
         .where('s.gym_id', gymId)
+        .whereNull('m.archived_at') // frozen in time until restored
         .select('s.member_id', 'm.status as member_status', 's.id as subscription_id', 's.expires_at', 's.status as sub_status')
         .orderBy(['s.member_id', { column: 's.expires_at', order: 'desc' }]);
 }

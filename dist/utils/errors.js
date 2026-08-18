@@ -16,7 +16,7 @@ const badRequest = (msg, code) => new AppError(400, msg, code);
 exports.badRequest = badRequest;
 const unauthorized = (msg = 'Unauthorized') => new AppError(401, msg);
 exports.unauthorized = unauthorized;
-const forbidden = (msg = 'Forbidden') => new AppError(403, msg);
+const forbidden = (msg = 'Forbidden', code) => new AppError(403, msg, code);
 exports.forbidden = forbidden;
 const notFound = (msg = 'Not found') => new AppError(404, msg);
 exports.notFound = notFound;

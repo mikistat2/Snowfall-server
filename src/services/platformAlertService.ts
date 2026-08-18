@@ -4,6 +4,7 @@ import { getTransport } from './mailer';
 import * as notifier from '../telegram/notifier';
 import * as botManager from '../telegram/botManager';
 import * as userModel from '../models/userModel';
+import * as billingModel from '../models/billingModel';
 
 /**
  * Alerts a gym's owner(s) when the platform admin acts on their account
@@ -157,4 +158,71 @@ export async function runSubscriptionAlerts(): Promise<void> {
     `The following gyms are approaching the end of their subscription:\n\n${lines.join('\n')}\n\n` +
       `Open your platform panel to renew, freeze or contact them.`,
   );
+}
+
+/**
+ * Daily job: tell each gym OWNER their subscription is running out, so they
+ * can renew themselves on the billing page instead of finding out by being
+ * locked out.
+ *
+ * Silent unless the paywall is on — while payments are off nobody is going to
+ * be locked out, and a "renew now" email would be a lie. Comped gyms are
+ * skipped for the same reason. Fires on the same 30/14/7/3/1/0 ladder as the
+ * admin alert, which also keeps it idempotent if the job runs twice in a day.
+ */
+export async function runOwnerRenewalReminders(): Promise<void> {
+  const settings = await billingModel.getSettings();
+  if (!settings.payments_required) return;
+
+  const gyms: { id: number; name: string; is_trial: boolean; subscription_ends_at: Date }[] = await db('gyms')
+    .where({ status: 'active', comped: false })
+    .whereNotNull('subscription_ends_at')
+    .select('id', 'name', 'is_trial', 'subscription_ends_at');
+
+  for (const gym of gyms) {
+    const endsAt = new Date(gym.subscription_ends_at);
+    const daysLeft = Math.floor((endsAt.getTime() - Date.now()) / 86_400_000);
+    if (!REMINDER_DAYS.has(daysLeft)) continue;
+
+    const what = gym.is_trial ? 'free trial' : 'subscription';
+    const when =
+      daysLeft === 0
+        ? `ends TODAY (${endsAt.toDateString()})`
+        : `ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}, on ${endsAt.toDateString()}`;
+    const grace =
+      settings.grace_days > 0
+        ? `\n\nYou have ${settings.grace_days} day${settings.grace_days === 1 ? '' : 's'} of grace after that date before access stops.`
+        : '\n\nAccess stops on that date until a payment is verified.';
+
+    const text =
+      `Your ${what} for "${gym.name}" on Snowfall ${when}.\n\n` +
+      `To keep going, log in and open the Billing page. You will find your payment code, the account to ` +
+      `send the money to, and the exact amount. Paste the transaction ID or upload the receipt screenshot ` +
+      `and your subscription extends immediately — no waiting for us.${grace}`;
+
+    try {
+      await notifier.sendToOwners(gym.id, 'admin_alert', text, { subscription_days_left: daysLeft });
+    } catch (err) {
+      console.warn(`[platform-alert] renewal telegram failed for gym ${gym.id}:`, err);
+    }
+
+    try {
+      const transport = getTransport();
+      if (!transport) continue;
+      const owners: { name: string; email: string }[] = await db('users')
+        .where({ gym_id: gym.id, role: 'owner' })
+        .select('name', 'email');
+      for (const owner of owners) {
+        await transport.sendMail({
+          from: `"Snowfall Platform" <${env.mail.user}>`,
+          to: `"${owner.name}" <${owner.email}>`,
+          replyTo: env.platformAdmin.email,
+          subject: `[Snowfall] Your ${what} ${daysLeft === 0 ? 'ends today' : `ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`}`,
+          text,
+        });
+      }
+    } catch (err) {
+      console.warn(`[platform-alert] renewal email failed for gym ${gym.id}:`, err);
+    }
+  }
 }

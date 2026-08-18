@@ -98,6 +98,10 @@ async function runAbsenceNudges(now = new Date()) {
         if (!botManager.getBot(gym.id))
             continue;
         const settings = gymModel.getSettings(gym);
+        // No camera → no check-ins are recorded, so "days away" is meaningless and
+        // every member would look absent. Skip absence nudges for camera-less gyms.
+        if (settings.camera_enabled === false)
+            continue;
         const lastVisits = await checkInModel.lastCheckInPerMember(gym.id);
         const members = await (0, knex_1.db)('members')
             .where({ gym_id: gym.id })

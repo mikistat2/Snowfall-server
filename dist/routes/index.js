@@ -42,7 +42,9 @@ const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const zod_1 = require("zod");
 const async_1 = require("../utils/async");
 const validate_1 = require("../middleware/validate");
+const multer_1 = __importDefault(require("multer"));
 const auth_1 = require("../middleware/auth");
+const admin_1 = require("./admin");
 const auth = __importStar(require("../controllers/authController"));
 const plans = __importStar(require("../controllers/planController"));
 const members = __importStar(require("../controllers/memberController"));
@@ -52,7 +54,9 @@ const dashboard = __importStar(require("../controllers/dashboardController"));
 const settings = __importStar(require("../controllers/settingsController"));
 const telegram = __importStar(require("../controllers/telegramController"));
 const guests = __importStar(require("../controllers/guestController"));
+const billing = __importStar(require("../controllers/billingController"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
+const platformModel = __importStar(require("../models/platformModel"));
 const cameraProxyController_1 = require("../controllers/cameraProxyController");
 const feedback = __importStar(require("../controllers/feedbackController"));
 exports.api = (0, express_1.Router)();
@@ -101,6 +105,32 @@ const enrollSchema = zod_1.z.object({
         note: zod_1.z.string().optional(),
     }),
 });
+/**
+ * A member back-filled from the gym's paper register. The dates are whatever
+ * was written on the paper — `calendar` says which system they are in, and the
+ * service converts them before anything is stored.
+ */
+const dateOnlyString = zod_1.z.string().regex(/^\d{4}-\d{1,2}-\d{1,2}$/);
+const previousMemberSchema = zod_1.z.object({
+    member: memberInfoSchema,
+    descriptors: zod_1.z.array(descriptor).max(5).default([]),
+    plan_id: zod_1.z.number().int().positive(),
+    calendar: zod_1.z.enum(['gregorian', 'ethiopian']),
+    /** Provenance for the audit log; does not affect conversion. */
+    entered_calendar: zod_1.z.enum(['gregorian', 'ethiopian']).optional(),
+    joined_at: dateOnlyString,
+    starts_at: dateOnlyString,
+    /** Omitted = start date + the plan's duration. */
+    expires_at: dateOnlyString.optional(),
+    /** Omitted = the money was taken before the system existed and is not being recorded. */
+    payment: zod_1.z
+        .object({
+        amount: zod_1.z.number().nonnegative().optional(),
+        method: paymentMethod,
+        note: zod_1.z.string().optional(),
+    })
+        .optional(),
+});
 const renewSchema = zod_1.z.object({
     plan_id: zod_1.z.number().int().positive(),
     amount: zod_1.z.number().nonnegative().optional(),
@@ -136,6 +166,7 @@ const settingsSchema = zod_1.z.object({
         match_threshold: zod_1.z.number().min(0.2).max(0.9),
         closing_time: zod_1.z.string().regex(/^\d{2}:\d{2}$/),
         entry_mode: zod_1.z.enum(['auto', 'manual']),
+        camera_enabled: zod_1.z.boolean(),
     })
         .partial()
         .optional(),
@@ -155,7 +186,40 @@ const feedbackLimiter = (0, express_rate_limit_1.default)({
     legacyHeaders: false,
     message: { error: 'Too much feedback at once — try again later' },
 });
+/**
+ * Far harder than the rest of the API: every verify attempt spends a paid
+ * verification credit, so this is a cost-control boundary and not just abuse
+ * prevention.
+ */
+const verifyLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many verification attempts — wait a minute and try again' },
+});
+/**
+ * Receipt screenshots, held in memory and decoded in-process (never written to
+ * disk, never forwarded anywhere).
+ *
+ * 6 MB is deliberately well under the body limit: the multipart envelope adds
+ * the other form fields and boundaries on top of the file, and overshooting
+ * makes the body get dropped BEFORE validation runs — which surfaces as a
+ * baffling "no file was uploaded".
+ */
+const receiptUpload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 6 * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+        cb(null, ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype));
+    },
+});
 // ---------- auth ----------
+// public: lets the landing/registration pages advertise an active free trial
+exports.api.get('/auth/registration-mode', (0, async_1.asyncHandler)(async (_req, res) => {
+    const { trial_mode, trial_days } = await platformModel.getSettings();
+    res.json({ trial_mode, trial_days });
+}));
 exports.api.post('/auth/register-gym', authLimiter, (0, validate_1.validate)(registerGymSchema), (0, async_1.asyncHandler)(auth.registerGym));
 exports.api.post('/auth/login', authLimiter, (0, validate_1.validate)(zod_1.z.object({ email: zod_1.z.string().email(), password: zod_1.z.string() })), (0, async_1.asyncHandler)(auth.login));
 exports.api.post('/auth/refresh', (0, validate_1.validate)(zod_1.z.object({ refreshToken: zod_1.z.string() })), (0, async_1.asyncHandler)(auth.refresh));
@@ -163,8 +227,27 @@ exports.api.post('/auth/logout', (0, validate_1.validate)(zod_1.z.object({ refre
 // LAN camera stream proxy — authenticates via ?token= because <img>/<video>
 // tags cannot send an Authorization header (registered before requireAuth).
 exports.api.get('/camera-proxy', (0, async_1.asyncHandler)(cameraProxyController_1.cameraProxy));
-// everything below requires a logged-in staff member
+// ---------- platform super-admin (product owner) ----------
+exports.api.use('/admin', admin_1.adminRouter);
+// everything below requires a logged-in staff member of a non-frozen gym
 exports.api.use(auth_1.requireAuth);
+exports.api.use((0, async_1.asyncHandler)(auth_1.blockFrozenGym));
+// ---------- billing (deliberately NOT behind the paywall) ----------
+// An unpaid gym is still signed in: it must be able to see what it owes and
+// pay it. Everything after this block is gated on an active subscription.
+const cycleSchema = zod_1.z.enum(['MONTHLY', 'YEARLY']);
+const onlineProvider = zod_1.z.enum(['CBE', 'TELEBIRR']);
+exports.api.get('/billing', (0, async_1.asyncHandler)(billing.checkout));
+exports.api.get('/billing/payments', (0, async_1.asyncHandler)(billing.history));
+exports.api.post('/billing/verify', verifyLimiter, auth_1.requireOwner, (0, validate_1.validate)(zod_1.z.object({
+    provider: onlineProvider,
+    reference: zod_1.z.string().min(4).max(200),
+    planId: zod_1.z.number().int().positive(),
+    cycle: cycleSchema,
+})), (0, async_1.asyncHandler)(billing.verifyReference));
+// multipart — validated inside the controller, since zod cannot see the file
+exports.api.post('/billing/verify-screenshot', verifyLimiter, auth_1.requireOwner, receiptUpload.single('file'), (0, async_1.asyncHandler)(billing.verifyScreenshot));
+exports.api.use((0, async_1.asyncHandler)(auth_1.requireActiveSubscription));
 // ---------- plans ----------
 exports.api.get('/plans', (0, async_1.asyncHandler)(plans.list));
 exports.api.post('/plans', (0, validate_1.validate)(planSchema), (0, async_1.asyncHandler)(plans.create));
@@ -173,11 +256,18 @@ exports.api.delete('/plans/:id', (0, async_1.asyncHandler)(plans.remove));
 // ---------- members ----------
 exports.api.get('/members', (0, async_1.asyncHandler)(members.list));
 exports.api.get('/members/descriptors', (0, async_1.asyncHandler)(members.allDescriptors));
+exports.api.get('/members/export', (0, async_1.asyncHandler)(members.exportData)); // before /members/:id
 exports.api.post('/members', (0, validate_1.validate)(enrollSchema), (0, async_1.asyncHandler)(members.enroll));
+exports.api.post('/members/previous', (0, validate_1.validate)(previousMemberSchema), (0, async_1.asyncHandler)(members.enrollPrevious));
 exports.api.get('/members/:id', (0, async_1.asyncHandler)(members.detail));
 exports.api.put('/members/:id', (0, validate_1.validate)(memberInfoSchema.partial()), (0, async_1.asyncHandler)(members.update));
 exports.api.post('/members/:id/descriptors', (0, validate_1.validate)(zod_1.z.object({ descriptors: zod_1.z.array(descriptor).min(1).max(5), replace: zod_1.z.boolean().optional() })), (0, async_1.asyncHandler)(members.addDescriptors));
 exports.api.post('/members/:id/renew', (0, validate_1.validate)(renewSchema), (0, async_1.asyncHandler)(members.renew));
+// Removing someone is owner-only, like every other destructive action here.
+// Archive keeps the payment history; DELETE is refused for anyone who has any.
+exports.api.post('/members/:id/archive', auth_1.requireOwner, (0, async_1.asyncHandler)(members.archive));
+exports.api.post('/members/:id/restore', auth_1.requireOwner, (0, async_1.asyncHandler)(members.restore));
+exports.api.delete('/members/:id', auth_1.requireOwner, (0, async_1.asyncHandler)(members.remove));
 exports.api.post('/members/:id/freeze', (0, async_1.asyncHandler)(members.freeze));
 exports.api.post('/members/:id/unfreeze', (0, async_1.asyncHandler)(members.unfreeze));
 // ---------- check-ins / monitor ----------
@@ -209,6 +299,7 @@ exports.api.get('/notifications', (0, async_1.asyncHandler)(telegram.notificatio
 // ---------- payments / dashboard ----------
 exports.api.get('/payments', (0, async_1.asyncHandler)(payments.list));
 exports.api.get('/dashboard/stats', (0, async_1.asyncHandler)(dashboard.stats));
+exports.api.get('/dashboard/today', (0, async_1.asyncHandler)(dashboard.today));
 // ---------- feedback (emailed to product owner) ----------
 exports.api.post('/feedback', feedbackLimiter, (0, validate_1.validate)(zod_1.z.object({
     category: zod_1.z.enum(['suggestion', 'bug', 'improvement', 'other']),

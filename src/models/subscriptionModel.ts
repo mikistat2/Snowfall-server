@@ -87,6 +87,7 @@ export async function listLatestWithMemberForGym(gymId: number): Promise<
     .distinctOn('s.member_id')
     .join('members as m', 'm.id', 's.member_id')
     .where('s.gym_id', gymId)
+    .whereNull('m.archived_at') // no reminders to someone who left the gym
     .select(
       's.member_id',
       'm.full_name',
@@ -106,6 +107,7 @@ export async function listLatestForGym(
     .distinctOn('s.member_id')
     .join('members as m', 'm.id', 's.member_id')
     .where('s.gym_id', gymId)
+    .whereNull('m.archived_at') // frozen in time until restored
     .select(
       's.member_id',
       'm.status as member_status',

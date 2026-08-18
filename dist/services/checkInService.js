@@ -67,7 +67,9 @@ async function recognize(input) {
     let confidence = input.confidence ?? null;
     if (input.memberId) {
         member = await memberModel.findById(input.gymId, input.memberId);
-        if (!member)
+        // archived members are dropped from the descriptor cache, but a kiosk that
+        // has not refreshed its copy can still send the id
+        if (!member || member.archived_at)
             throw (0, errors_1.notFound)('Member not found');
     }
     else if (!guestId && input.descriptor) {
@@ -189,6 +191,8 @@ async function approve(gymId, memberId, userId) {
     const member = await memberModel.findById(gymId, memberId);
     if (!member)
         throw (0, errors_1.notFound)('Member not found');
+    if (member.archived_at)
+        throw (0, errors_1.badRequest)('This member is archived — restore them first');
     const open = await checkInModel.findOpenByMember(memberId);
     if (open) {
         return {
@@ -252,6 +256,8 @@ async function override(gymId, memberId, userId) {
     const member = await memberModel.findById(gymId, memberId);
     if (!member)
         throw (0, errors_1.notFound)('Member not found');
+    if (member.archived_at)
+        throw (0, errors_1.badRequest)('This member is archived — restore them first');
     const open = await checkInModel.findOpenByMember(memberId);
     if (open) {
         return {

@@ -4,6 +4,7 @@ import * as gymModel from '../models/gymModel';
 import * as userModel from '../models/userModel';
 import * as refreshTokenModel from '../models/refreshTokenModel';
 import * as platformModel from '../models/platformModel';
+import * as billingModel from '../models/billingModel';
 import * as platformAlert from './platformAlertService';
 import {
   signAccessToken,
@@ -47,8 +48,18 @@ export async function registerGym(input: {
       }
     : { status: 'pending' as const };
 
+  /**
+   * Stamped at registration, never evaluated retroactively: a gym that signs
+   * up while the paywall is OFF keeps its access forever, even after the
+   * switch is turned back on. Turning payments on must only affect people who
+   * sign up afterwards — otherwise a free launch turns into a mass lockout the
+   * day you start charging.
+   */
+  const billing = await billingModel.getSettings();
+  const comped = !billing.payments_required;
+
   const { gym, user } = await db.transaction(async (trx) => {
-    const gym = await gymModel.create({ ...input.gym, ...trialFields }, trx);
+    const gym = await gymModel.create({ ...input.gym, ...trialFields, comped }, trx);
     const user = await userModel.create(
       {
         gym_id: gym.id,

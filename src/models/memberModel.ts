@@ -16,10 +16,13 @@ export interface MemberInput {
  */
 export async function listByGym(
   gymId: number,
-  filter: { search?: string; status?: MemberStatus; limit?: number; offset?: number } = {},
+  filter: { search?: string; status?: MemberStatus; archived?: boolean; limit?: number; offset?: number } = {},
 ): Promise<(MemberRow & { plan_name: string | null; expires_at: Date | null })[]> {
   const q = db('members as m')
     .where('m.gym_id', gymId)
+    // archived members are off the roster: they surface only when asked for by
+    // name, from the Archived filter
+    .modify((b) => (filter.archived ? b.whereNotNull('m.archived_at') : b.whereNull('m.archived_at')))
     .leftJoin(
       db('subscriptions')
         .select('member_id', 'plan_id', 'expires_at')
@@ -91,7 +94,7 @@ export async function exportByGym(gymId: number): Promise<MemberExportRow[]> {
       SELECT count(*) AS cnt, max(checked_in_at) AS last_at
       FROM check_ins WHERE member_id = m.id
     ) ci ON TRUE
-    WHERE m.gym_id = ?
+    WHERE m.gym_id = ? AND m.archived_at IS NULL
     ORDER BY m.full_name
   `,
     [gymId],
@@ -103,7 +106,15 @@ export async function findById(gymId: number, id: number, trx: Knex = db): Promi
   return trx('members').where({ gym_id: gymId, id }).first();
 }
 
-export async function create(gymId: number, data: MemberInput, trx: Knex = db): Promise<MemberRow> {
+/**
+ * `joined_at` defaults to now() in the schema and is only ever passed when
+ * back-filling a member who joined before the system was installed.
+ */
+export async function create(
+  gymId: number,
+  data: MemberInput & { joined_at?: string },
+  trx: Knex = db,
+): Promise<MemberRow> {
   const [row] = await trx('members').insert({ ...data, gym_id: gymId }).returning('*');
   return row;
 }
@@ -122,6 +133,38 @@ export async function setStatus(id: number, status: MemberStatus, trx: Knex = db
   await trx('members').where({ id }).update({ status });
 }
 
+export async function setArchived(
+  gymId: number,
+  id: number,
+  archived: boolean,
+  trx: Knex = db,
+): Promise<MemberRow | undefined> {
+  const [row] = await trx('members')
+    .where({ gym_id: gymId, id })
+    .update({ archived_at: archived ? new Date() : null })
+    .returning('*');
+  return row;
+}
+
+/** How many payments reference this member — the test for "can this be deleted?". */
+export async function paymentCount(memberId: number, trx: Knex = db): Promise<number> {
+  const row = await trx('payments').where({ member_id: memberId }).count<{ count: string }>('id as count').first();
+  return Number(row?.count ?? 0);
+}
+
+/**
+ * Permanent removal. Subscriptions, face descriptors, check-ins and
+ * notifications are ON DELETE CASCADE; guests.converted_member_id is not, so
+ * that pointer is cleared first (the guest's own record is history and stays).
+ *
+ * Callers must have established that the member has no payments — the payments
+ * FK would refuse anyway, but with a constraint error instead of an explanation.
+ */
+export async function hardDelete(gymId: number, id: number, trx: Knex = db): Promise<void> {
+  await trx('guests').where({ converted_member_id: id }).update({ converted_member_id: null });
+  await trx('members').where({ gym_id: gymId, id }).delete();
+}
+
 /** All descriptors for a gym's non-expired-beyond-recognition members (monitor cache). */
 export async function listDescriptorsByGym(gymId: number): Promise<
   { member_id: number; full_name: string; status: MemberStatus; descriptors: number[][] }[]
@@ -130,6 +173,8 @@ export async function listDescriptorsByGym(gymId: number): Promise<
     await db('face_descriptors as fd')
       .join('members as m', 'm.id', 'fd.member_id')
       .where('m.gym_id', gymId)
+      // an archived member must not be recognised at the door
+      .whereNull('m.archived_at')
       .select('fd.member_id', 'm.full_name', 'm.status', 'fd.descriptor');
 
   const byMember = new Map<number, { member_id: number; full_name: string; status: MemberStatus; descriptors: number[][] }>();

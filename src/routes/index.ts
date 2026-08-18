@@ -3,7 +3,8 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { asyncHandler } from '../utils/async';
 import { validate } from '../middleware/validate';
-import { requireAuth, requireOwner, blockFrozenGym } from '../middleware/auth';
+import multer from 'multer';
+import { requireAuth, requireOwner, blockFrozenGym, requireActiveSubscription } from '../middleware/auth';
 import { adminRouter } from './admin';
 import * as auth from '../controllers/authController';
 import * as plans from '../controllers/planController';
@@ -14,6 +15,7 @@ import * as dashboard from '../controllers/dashboardController';
 import * as settings from '../controllers/settingsController';
 import * as telegram from '../controllers/telegramController';
 import * as guests from '../controllers/guestController';
+import * as billing from '../controllers/billingController';
 import * as auditLogModel from '../models/auditLogModel';
 import * as platformModel from '../models/platformModel';
 import { cameraProxy } from '../controllers/cameraProxyController';
@@ -69,6 +71,33 @@ const enrollSchema = z.object({
     method: paymentMethod,
     note: z.string().optional(),
   }),
+});
+
+/**
+ * A member back-filled from the gym's paper register. The dates are whatever
+ * was written on the paper — `calendar` says which system they are in, and the
+ * service converts them before anything is stored.
+ */
+const dateOnlyString = z.string().regex(/^\d{4}-\d{1,2}-\d{1,2}$/);
+const previousMemberSchema = z.object({
+  member: memberInfoSchema,
+  descriptors: z.array(descriptor).max(5).default([]),
+  plan_id: z.number().int().positive(),
+  calendar: z.enum(['gregorian', 'ethiopian']),
+  /** Provenance for the audit log; does not affect conversion. */
+  entered_calendar: z.enum(['gregorian', 'ethiopian']).optional(),
+  joined_at: dateOnlyString,
+  starts_at: dateOnlyString,
+  /** Omitted = start date + the plan's duration. */
+  expires_at: dateOnlyString.optional(),
+  /** Omitted = the money was taken before the system existed and is not being recorded. */
+  payment: z
+    .object({
+      amount: z.number().nonnegative().optional(),
+      method: paymentMethod,
+      note: z.string().optional(),
+    })
+    .optional(),
 });
 
 const renewSchema = z.object({
@@ -130,6 +159,35 @@ const feedbackLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too much feedback at once — try again later' },
 });
+/**
+ * Far harder than the rest of the API: every verify attempt spends a paid
+ * verification credit, so this is a cost-control boundary and not just abuse
+ * prevention.
+ */
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many verification attempts — wait a minute and try again' },
+});
+
+/**
+ * Receipt screenshots, held in memory and decoded in-process (never written to
+ * disk, never forwarded anywhere).
+ *
+ * 6 MB is deliberately well under the body limit: the multipart envelope adds
+ * the other form fields and boundaries on top of the file, and overshooting
+ * makes the body get dropped BEFORE validation runs — which surfaces as a
+ * baffling "no file was uploaded".
+ */
+const receiptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 6 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    cb(null, ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype));
+  },
+});
 
 // ---------- auth ----------
 // public: lets the landing/registration pages advertise an active free trial
@@ -161,6 +219,39 @@ api.use('/admin', adminRouter);
 api.use(requireAuth);
 api.use(asyncHandler(blockFrozenGym));
 
+// ---------- billing (deliberately NOT behind the paywall) ----------
+// An unpaid gym is still signed in: it must be able to see what it owes and
+// pay it. Everything after this block is gated on an active subscription.
+const cycleSchema = z.enum(['MONTHLY', 'YEARLY']);
+const onlineProvider = z.enum(['CBE', 'TELEBIRR']);
+
+api.get('/billing', asyncHandler(billing.checkout));
+api.get('/billing/payments', asyncHandler(billing.history));
+api.post(
+  '/billing/verify',
+  verifyLimiter,
+  requireOwner,
+  validate(
+    z.object({
+      provider: onlineProvider,
+      reference: z.string().min(4).max(200),
+      planId: z.number().int().positive(),
+      cycle: cycleSchema,
+    }),
+  ),
+  asyncHandler(billing.verifyReference),
+);
+// multipart — validated inside the controller, since zod cannot see the file
+api.post(
+  '/billing/verify-screenshot',
+  verifyLimiter,
+  requireOwner,
+  receiptUpload.single('file'),
+  asyncHandler(billing.verifyScreenshot),
+);
+
+api.use(asyncHandler(requireActiveSubscription));
+
 // ---------- plans ----------
 api.get('/plans', asyncHandler(plans.list));
 api.post('/plans', validate(planSchema), asyncHandler(plans.create));
@@ -172,6 +263,7 @@ api.get('/members', asyncHandler(members.list));
 api.get('/members/descriptors', asyncHandler(members.allDescriptors));
 api.get('/members/export', asyncHandler(members.exportData)); // before /members/:id
 api.post('/members', validate(enrollSchema), asyncHandler(members.enroll));
+api.post('/members/previous', validate(previousMemberSchema), asyncHandler(members.enrollPrevious));
 api.get('/members/:id', asyncHandler(members.detail));
 api.put('/members/:id', validate(memberInfoSchema.partial()), asyncHandler(members.update));
 api.post(
@@ -180,6 +272,11 @@ api.post(
   asyncHandler(members.addDescriptors),
 );
 api.post('/members/:id/renew', validate(renewSchema), asyncHandler(members.renew));
+// Removing someone is owner-only, like every other destructive action here.
+// Archive keeps the payment history; DELETE is refused for anyone who has any.
+api.post('/members/:id/archive', requireOwner, asyncHandler(members.archive));
+api.post('/members/:id/restore', requireOwner, asyncHandler(members.restore));
+api.delete('/members/:id', requireOwner, asyncHandler(members.remove));
 api.post('/members/:id/freeze', asyncHandler(members.freeze));
 api.post('/members/:id/unfreeze', asyncHandler(members.unfreeze));
 

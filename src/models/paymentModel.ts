@@ -23,6 +23,11 @@ export async function create(
     method: PaymentMethod;
     marked_by: number;
     note?: string | null;
+    /**
+     * Only set when back-filling a payment that was made before the system
+     * existed — a historical amount must not land in this month's revenue.
+     */
+    created_at?: string | Date;
   },
   trx: Knex = db,
 ): Promise<PaymentRow> {

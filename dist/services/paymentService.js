@@ -60,6 +60,8 @@ async function renew(input) {
         const member = await memberModel.findById(input.gymId, input.memberId, trx);
         if (!member)
             throw (0, errors_1.notFound)('Member not found');
+        if (member.archived_at)
+            throw (0, errors_1.badRequest)('This member is archived — restore them before taking payment');
         const plan = await planModel.findById(input.gymId, input.planId);
         if (!plan)
             throw (0, errors_1.notFound)('Plan not found');

@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.stats = stats;
+exports.today = today;
 const knex_1 = require("../db/knex");
 const checkInModel = __importStar(require("../models/checkInModel"));
 const paymentModel = __importStar(require("../models/paymentModel"));
@@ -50,12 +51,14 @@ async function stats(req, res) {
         (0, knex_1.db)('subscriptions as s')
             .join('members as m', 'm.id', 's.member_id')
             .where('s.gym_id', gymId)
+            .whereNull('m.archived_at')
             .whereNot('s.status', 'frozen')
             .whereBetween('s.expires_at', [now, in7days])
             .countDistinct('s.member_id as count')
             .first(),
         (0, knex_1.db)('members')
             .where({ gym_id: gymId })
+            .whereNull('archived_at')
             .select('status')
             .count('id as count')
             .groupBy('status'),
@@ -68,6 +71,80 @@ async function stats(req, res) {
         expiring_in_7_days: Number(expiringSoonRow?.count ?? 0),
         members_by_status: Object.fromEntries(memberCounts.map((r) => [r.status, Number(r.count)])),
         peak_hours: peakHours,
+    });
+}
+/**
+ * "Today" digest for the sidebar page: everything that happened today (new
+ * members, payments, check-ins, guest passes) plus who is about to expire in
+ * the next 7 days and who just expired in the last 7 — actionable follow-ups.
+ */
+async function today(req, res) {
+    const gymId = req.auth.gymId;
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const [newMembers, expiring, payments, checkInRow, occupancy, guestRow] = await Promise.all([
+        knex_1.db.raw(`
+      SELECT m.id, m.full_name, m.phone, m.created_at, p.name AS plan_name
+      FROM members m
+      LEFT JOIN LATERAL (
+        SELECT pl.name FROM subscriptions s JOIN plans pl ON pl.id = s.plan_id
+        WHERE s.member_id = m.id ORDER BY s.created_at DESC LIMIT 1
+      ) p ON TRUE
+      WHERE m.gym_id = ? AND m.created_at >= ? AND m.archived_at IS NULL
+      ORDER BY m.created_at DESC
+    `, [gymId, startOfDay]),
+        // latest subscription per member, within ±7 days of today (negative
+        // days_left = just expired; the client splits the two groups)
+        knex_1.db.raw(`
+      WITH latest AS (
+        SELECT DISTINCT ON (s.member_id) s.member_id, s.expires_at
+        FROM subscriptions s
+        WHERE s.gym_id = ?
+        ORDER BY s.member_id, s.expires_at DESC
+      )
+      SELECT m.id, m.full_name, m.phone, m.status, l.expires_at,
+             (l.expires_at - CURRENT_DATE)::int AS days_left
+      FROM latest l
+      JOIN members m ON m.id = l.member_id
+      WHERE m.status <> 'frozen'
+        AND m.archived_at IS NULL
+        AND l.expires_at BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE + 7
+      ORDER BY l.expires_at, m.full_name
+    `, [gymId]),
+        knex_1.db.raw(`
+      SELECT p.id, p.amount, p.method, p.created_at, m.full_name AS member_name
+      FROM payments p JOIN members m ON m.id = p.member_id
+      WHERE p.gym_id = ? AND p.created_at >= ?
+      ORDER BY p.created_at DESC
+    `, [gymId, startOfDay]),
+        knex_1.db.raw(`
+      SELECT
+        count(*) FILTER (WHERE decision IN ('allowed', 'override'))::int AS allowed,
+        count(*) FILTER (WHERE decision LIKE 'denied%')::int             AS denied,
+        count(DISTINCT member_id) FILTER
+          (WHERE decision IN ('allowed', 'override') AND member_id IS NOT NULL)::int AS unique_members
+      FROM check_ins
+      WHERE gym_id = ? AND checked_in_at >= ?
+    `, [gymId, startOfDay]),
+        occupancyService.getOccupancy(gymId),
+        (0, knex_1.db)('guests')
+            .where({ gym_id: gymId })
+            .where('created_at', '>=', startOfDay)
+            .count('id as count')
+            .first(),
+    ]);
+    const paymentRows = payments.rows;
+    res.json({
+        new_members: newMembers.rows,
+        expiring: expiring.rows,
+        payments_today: {
+            count: paymentRows.length,
+            total: paymentRows.reduce((sum, p) => sum + Number(p.amount), 0),
+            rows: payments.rows,
+        },
+        check_ins_today: checkInRow.rows[0],
+        occupancy,
+        guests_today: Number(guestRow?.count ?? 0),
     });
 }
 //# sourceMappingURL=dashboardController.js.map

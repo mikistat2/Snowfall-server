@@ -9,7 +9,7 @@ import * as auditLogModel from '../models/auditLogModel';
 import { computeRenewal } from './decisionEngine';
 import { recomputeMemberStatus } from './statusService';
 import { emitToGym } from '../sockets';
-import { notFound } from '../utils/errors';
+import { badRequest, notFound } from '../utils/errors';
 import type { PaymentMethod } from '../types';
 
 /**
@@ -33,6 +33,7 @@ export async function renew(input: {
   const result = await db.transaction(async (trx) => {
     const member = await memberModel.findById(input.gymId, input.memberId, trx);
     if (!member) throw notFound('Member not found');
+    if (member.archived_at) throw badRequest('This member is archived — restore them before taking payment');
     const plan = await planModel.findById(input.gymId, input.planId);
     if (!plan) throw notFound('Plan not found');
 

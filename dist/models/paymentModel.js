@@ -25,6 +25,8 @@ async function list(gymId, filter = {}, limit = 200) {
         q.andWhere('pay.method', filter.method);
     if (filter.member_id)
         q.andWhere('pay.member_id', filter.member_id);
+    if (filter.offset != null)
+        q.offset(filter.offset);
     return q;
 }
 async function listByMember(memberId) {

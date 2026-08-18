@@ -59,14 +59,21 @@ export function startJobs(): void {
     }
   });
 
-  // 08:00 daily: email the PLATFORM admin about gym subscriptions/trials
-  // ending soon (30/14/7/3/1/0 days left).
+  // 08:00 daily: subscription reminders on the 30/14/7/3/1/0-days-left ladder
+  // — to the PLATFORM admin (all gyms, one digest) and, when the paywall is
+  // on, to each gym OWNER so they can renew themselves before being locked out.
   cron.schedule('0 8 * * *', async () => {
     try {
       await platformAlert.runSubscriptionAlerts();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[jobs] platform subscription alerts failed', err);
+    }
+    try {
+      await platformAlert.runOwnerRenewalReminders();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[jobs] owner renewal reminders failed', err);
     }
   });
 }

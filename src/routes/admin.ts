@@ -5,6 +5,7 @@ import { asyncHandler } from '../utils/async';
 import { validate } from '../middleware/validate';
 import { requirePlatformAdmin, requirePlatformOwner, requirePlatformPerm } from '../middleware/auth';
 import * as admin from '../controllers/platformAdminController';
+import * as billing from '../controllers/platformBillingController';
 
 /**
  * Platform admin API. Two levels of access:
@@ -76,6 +77,79 @@ adminRouter.delete(
   requirePlatformOwner,
   validate(z.object({ confirm_name: z.string(), note: z.string().max(1000).optional() })),
   asyncHandler(admin.deleteGym),
+);
+
+// ---------------------------------------------------------------- billing --
+// Subscription billing: the master switch, our prices and payment accounts,
+// and every verification attempt made by any gym. Settings and plans are
+// owner-only (they decide who pays what); the attempts table and manual
+// payment recording follow the existing `renew` permission.
+
+const cycleSchema = z.enum(['MONTHLY', 'YEARLY']);
+
+adminRouter.get('/billing/settings', requirePlatformOwner, asyncHandler(billing.getSettings));
+adminRouter.put(
+  '/billing/settings',
+  requirePlatformOwner,
+  validate(
+    z
+      .object({
+        payments_required: z.boolean(),
+        cbe_enabled: z.boolean(),
+        cbe_account_number: z.string().max(64).nullable(),
+        cbe_account_name: z.string().max(200).nullable(),
+        telebirr_enabled: z.boolean(),
+        telebirr_phone: z.string().max(32).nullable(),
+        telebirr_account_name: z.string().max(200).nullable(),
+        currency: z.string().min(1).max(8),
+        receipt_max_age_days: z.number().int().min(1).max(365),
+        grace_days: z.number().int().min(0).max(90),
+        instructions: z.string().max(4000).nullable(),
+      })
+      .partial(),
+  ),
+  asyncHandler(billing.updateSettings),
+);
+
+const planBody = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(1000).nullable().optional(),
+  monthly_price: z.number().nonnegative(),
+  yearly_price: z.number().nonnegative(),
+  currency: z.string().min(1).max(8).optional(),
+  sort_order: z.number().int().min(0).max(999).optional(),
+  is_active: z.boolean().optional(),
+});
+adminRouter.get('/billing/plans', requirePlatformOwner, asyncHandler(billing.listPlans));
+adminRouter.post('/billing/plans', requirePlatformOwner, validate(planBody), asyncHandler(billing.createPlan));
+adminRouter.put(
+  '/billing/plans/:id',
+  requirePlatformOwner,
+  validate(planBody.partial()),
+  asyncHandler(billing.updatePlan),
+);
+adminRouter.delete('/billing/plans/:id', requirePlatformOwner, asyncHandler(billing.removePlan));
+
+adminRouter.get('/billing/payments', asyncHandler(billing.listAttempts));
+adminRouter.post(
+  '/gyms/:id/record-payment',
+  requirePlatformPerm('renew'),
+  validate(
+    z.object({
+      planId: z.number().int().positive().nullable().default(null),
+      cycle: cycleSchema,
+      amount: z.number().nonnegative(),
+      provider: z.enum(['CASH', 'CBE', 'TELEBIRR']).default('CASH'),
+      note: z.string().min(1).max(1000),
+    }),
+  ),
+  asyncHandler(billing.recordPayment),
+);
+adminRouter.put(
+  '/gyms/:id/comped',
+  requirePlatformOwner,
+  validate(z.object({ comped: z.boolean() })),
+  asyncHandler(billing.setComped),
 );
 
 const permsSchema = z.object({

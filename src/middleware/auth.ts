@@ -1,7 +1,9 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, type AccessPayload } from '../utils/jwt';
-import { forbidden, unauthorized } from '../utils/errors';
+import { AppError, forbidden, unauthorized } from '../utils/errors';
 import * as gymModel from '../models/gymModel';
+import * as billingModel from '../models/billingModel';
+import * as billingService from '../services/billingService';
 import * as platformAdminModel from '../models/platformAdminModel';
 import type { PlatformAdminPerms } from '../models/platformAdminModel';
 
@@ -96,4 +98,37 @@ export async function blockFrozenGym(req: Request, _res: Response, next: NextFun
     throw forbidden('This gym registration has not been approved yet.', 'GYM_PENDING');
   }
   next();
+}
+
+/**
+ * The paywall. Returns **402** with a machine-readable code — not 401 or 403,
+ * which the client already spends on "log in again" and "you are frozen".
+ *
+ * Staff of an unpaid gym are still signed in and can reach /billing, /auth
+ * and their own profile; they just cannot reach anything that costs us money
+ * to run. The billing routes are registered before this middleware for exactly
+ * that reason.
+ *
+ * The decision itself lives in billingService.hasAccess, which the client's
+ * checkout payload also reports, so the two can never disagree.
+ */
+export async function requireActiveSubscription(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const settings = await billingModel.getSettings();
+  if (!settings.payments_required) return next();
+
+  const gym = await gymModel.findById(req.auth.gymId);
+  if (!gym) throw unauthorized('Gym no longer exists');
+  if (billingService.hasAccess(gym, settings)) return next();
+
+  throw new AppError(
+    402,
+    gym.subscription_ends_at
+      ? 'Your subscription has expired. Renew it to continue using the system.'
+      : 'Your gym does not have an active subscription yet. Pay to activate it.',
+    'PAYMENT_REQUIRED',
+  );
 }

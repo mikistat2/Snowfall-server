@@ -6,6 +6,7 @@ exports.update = update;
 exports.updateSettings = updateSettings;
 exports.getSettings = getSettings;
 exports.listAll = listAll;
+exports.setComped = setComped;
 const knex_1 = require("../db/knex");
 const types_1 = require("../types");
 async function findById(id, trx = knex_1.db) {
@@ -33,5 +34,9 @@ function getSettings(gym) {
 }
 async function listAll() {
     return (0, knex_1.db)('gyms').select('*');
+}
+/** Permanent exemption from the subscription paywall (see billingService.hasAccess). */
+async function setComped(id, comped) {
+    await (0, knex_1.db)('gyms').where({ id }).update({ comped });
 }
 //# sourceMappingURL=gymModel.js.map

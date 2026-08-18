@@ -57,6 +57,24 @@ export const env = {
     email: optional('PLATFORM_ADMIN_EMAIL', 'miki123mbt@gmail.com'),
     password: optional('PLATFORM_ADMIN_PASSWORD', ''),
   },
+  /**
+   * Receipt verification API (CBE / Telebirr transaction lookup).
+   *
+   * The key NEVER reaches the browser — every lookup is made from the server
+   * and the platform panel is told only whether a key is present. Until
+   * VERIFY_API_KEY is set, the billing page reports that payments are not set
+   * up rather than letting a gym send money we cannot check.
+   *
+   * The timeout is deliberately long: these calls hit a bank upstream.
+   */
+  verification: {
+    baseUrl: optional('VERIFY_API_URL', 'https://api.veritas.et').replace(/\/+$/, ''),
+    apiKey: optional('VERIFY_API_KEY', ''),
+    timeoutMs: Number(optional('VERIFY_TIMEOUT_MS', '30000')),
+    retries: Number(optional('VERIFY_RETRIES', '2')),
+    /** Keep the provider's full payload on the payment row (support/debugging). */
+    storeRawResponse: optional('VERIFY_STORE_RAW', 'true') === 'true',
+  },
   // Feedback email (Gmail SMTP). SMTP_USER/SMTP_PASS must be a Gmail address
   // + App Password (2-Step Verification required) for sending to work.
   mail: {

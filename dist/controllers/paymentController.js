@@ -35,12 +35,14 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.list = list;
 const paymentModel = __importStar(require("../models/paymentModel"));
+const pagination_1 = require("../utils/pagination");
 async function list(req, res) {
     res.json(await paymentModel.list(req.auth.gymId, {
         from: req.query.from,
         to: req.query.to,
         method: req.query.method,
         member_id: req.query.member_id ? Number(req.query.member_id) : undefined,
-    }));
+        offset: (0, pagination_1.parseOffset)(req.query.offset),
+    }, (0, pagination_1.parseLimit)(req.query.limit) ?? 200));
 }
 //# sourceMappingURL=paymentController.js.map
