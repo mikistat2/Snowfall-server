@@ -100,16 +100,20 @@ export async function recordPayment(req: Request, res: Response): Promise<void> 
   const gym = await gymModel.findById(gymId);
   if (!gym) throw notFound('Gym not found');
 
-  const { planId, cycle, amount, provider, note } = req.body as {
+  const { planId, cycle, amount, provider, note, startNow } = req.body as {
     planId: number | null;
     cycle: BillingCycle;
     amount: number;
     provider: BillingProvider;
     note: string;
+    startNow?: boolean;
   };
   if (!note?.trim()) throw badRequest('A note is required — record how and when this payment was received.');
 
-  const { payment, expiresAt } = await billingService.recordManualPayment({
+  // Converting a free trial starts the paid period today by default: the days
+  // left on a trial were never paid for, so they are not stacked on top of the
+  // month or year being bought. An explicit `startNow` always wins.
+  const result = await billingService.recordManualPayment({
     gymId,
     planId: planId ?? null,
     cycle,
@@ -117,13 +121,14 @@ export async function recordPayment(req: Request, res: Response): Promise<void> 
     provider,
     note: note.trim(),
     recordedBy: req.platform?.name ?? 'platform admin',
+    startNow: startNow ?? gym.is_trial,
   });
 
   void platformAlert
-    .notifyGymOwners(gymId, gym.name, 'renew', new Date(expiresAt).toDateString())
+    .notifyGymOwners(gymId, gym.name, 'renew', new Date(result.expiresAt).toDateString())
     .catch(() => undefined);
 
-  res.json({ payment, expiresAt });
+  res.json(result);
 }
 
 /**

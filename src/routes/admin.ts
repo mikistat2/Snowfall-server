@@ -49,7 +49,18 @@ adminRouter.put(
 
 // permission-gated (the owner always passes)
 adminRouter.post('/gyms/:id/approve', requirePlatformPerm('approve'), asyncHandler(admin.approveGym));
-adminRouter.post('/gyms/:id/renew', requirePlatformPerm('renew'), asyncHandler(admin.renewGym));
+adminRouter.post(
+  '/gyms/:id/renew',
+  requirePlatformPerm('renew'),
+  // Body is optional: no body at all still means "+1 year", as it always did.
+  validate(
+    z
+      .object({ cycle: z.enum(['MONTHLY', 'YEARLY']), fromNow: z.boolean() })
+      .partial()
+      .default({}),
+  ),
+  asyncHandler(admin.renewGym),
+);
 adminRouter.post(
   '/gyms/:id/freeze',
   requirePlatformPerm('freeze'),
@@ -141,6 +152,8 @@ adminRouter.post(
       amount: z.number().nonnegative(),
       provider: z.enum(['CASH', 'CBE', 'TELEBIRR']).default('CASH'),
       note: z.string().min(1).max(1000),
+      /** Omitted → the server starts trials today and stacks everyone else. */
+      startNow: z.boolean().optional(),
     }),
   ),
   asyncHandler(billing.recordPayment),

@@ -9,6 +9,7 @@ import * as platformAdminModel from '../models/platformAdminModel';
 import * as gymModel from '../models/gymModel';
 import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
+import type { BillingCycle } from '../types';
 
 /**
  * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
@@ -143,13 +144,23 @@ export async function approveGym(req: Request, res: Response): Promise<void> {
   res.json({ ok: true, subscription_ends_at: ends, notified });
 }
 
-/** Extend the yearly subscription by one year (also converts a trial to paid). */
+/**
+ * Extend the subscription by one month or one year (also converts a trial to
+ * paid). No payment row is written here — this is the goodwill/free path. To
+ * convert a trial AND keep a record of the money, use
+ * POST /gyms/:id/record-payment instead.
+ *
+ * A trial conversion defaults to starting today: the days left on a free trial
+ * are not something the gym paid for, so they are not carried into the paid
+ * period unless the caller explicitly asks.
+ */
 export async function renewGym(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const gym = await gymModel.findById(id);
   if (!gym) throw notFound('Gym not found');
   if (gym.status === 'pending') throw forbidden('Approve the registration first');
-  const ends = await platformModel.renewGym(id);
+  const { cycle = 'YEARLY', fromNow } = req.body as { cycle?: BillingCycle; fromNow?: boolean };
+  const ends = await platformModel.renewGym(id, cycle, fromNow ?? gym.is_trial);
   const notified = await timeboxed(
     platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString()),
   );

@@ -426,6 +426,10 @@ async function activate(
  * payment so there is exactly one implementation of the expiry rule, and it
  * carries no `verified_reference` — an unverifiable payment must stay visibly
  * different from a bank-verified one.
+ *
+ * `startNow` starts the paid period today instead of stacking it on the time
+ * that is left. That is what converting a free trial means: the unused trial
+ * days were never paid for, so they are not added on top of the month bought.
  */
 export async function recordManualPayment(input: {
   gymId: number;
@@ -435,12 +439,15 @@ export async function recordManualPayment(input: {
   provider: BillingProvider;
   note: string;
   recordedBy: string;
-}): Promise<{ payment: BillingPaymentRow; expiresAt: string }> {
+  /** Ignore any remaining time and run the period from today. */
+  startNow?: boolean;
+}): Promise<{ payment: BillingPaymentRow; expiresAt: string; startsAt: string; convertedFromTrial: boolean }> {
   const [settings, gym] = await Promise.all([billingModel.getSettings(), gymModel.findById(input.gymId)]);
   if (!gym) throw notFound('Gym not found');
   const plan = input.planId ? await billingModel.findPlan(input.planId) : null;
 
-  const { start, end } = computePeriod(gym.subscription_ends_at, input.cycle);
+  const { start, end } = computePeriod(input.startNow ? null : gym.subscription_ends_at, input.cycle);
+  const wasTrial = gym.is_trial;
 
   const payment = await db.transaction(async (trx) => {
     const row = await billingModel.createPayment(
@@ -461,7 +468,10 @@ export async function recordManualPayment(input: {
         recorded_by: input.recordedBy,
         note: input.note,
         verified_at: new Date(),
-        warnings: ['Recorded by a platform admin — not verified against a bank receipt.'],
+        warnings: [
+          'Recorded by a platform admin — not verified against a bank receipt.',
+          ...(wasTrial ? ['Converted this gym from its free trial to a paid subscription.'] : []),
+        ],
       } as never,
       trx,
     );
@@ -476,5 +486,10 @@ export async function recordManualPayment(input: {
     return row;
   });
 
-  return { payment, expiresAt: end.toISOString() };
+  return {
+    payment,
+    expiresAt: end.toISOString(),
+    startsAt: start.toISOString(),
+    convertedFromTrial: wasTrial,
+  };
 }
