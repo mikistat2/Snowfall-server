@@ -10,27 +10,48 @@ export async function stats(req: Request, res: Response): Promise<void> {
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const [checkInsToday, occupancy, revenueThisMonth, expiringSoonRow, memberCounts, peakHours] =
-    await Promise.all([
-      checkInModel.countToday(gymId, now),
-      occupancyService.getOccupancy(gymId),
-      paymentModel.revenueSince(gymId, startOfMonth),
-      db('subscriptions as s')
-        .join('members as m', 'm.id', 's.member_id')
-        .where('s.gym_id', gymId)
-        .whereNull('m.archived_at')
-        .whereNot('s.status', 'frozen')
-        .whereBetween('s.expires_at', [now, in7days])
-        .countDistinct<{ count: string }>('s.member_id as count')
-        .first(),
-      db('members')
-        .where({ gym_id: gymId })
-        .whereNull('archived_at')
-        .select('status')
-        .count('id as count')
-        .groupBy('status'),
-      checkInModel.peakHours(gymId, 14),
-    ]);
+  const [
+    checkInsToday,
+    occupancy,
+    revenueThisMonth,
+    expiringSoonRow,
+    memberCounts,
+    sexCounts,
+    peakHours,
+  ] = await Promise.all([
+    checkInModel.countToday(gymId, now),
+    occupancyService.getOccupancy(gymId),
+    paymentModel.revenueSince(gymId, startOfMonth),
+    db('subscriptions as s')
+      .join('members as m', 'm.id', 's.member_id')
+      .where('s.gym_id', gymId)
+      .whereNull('m.archived_at')
+      .whereNot('s.status', 'frozen')
+      .whereBetween('s.expires_at', [now, in7days])
+      .countDistinct<{ count: string }>('s.member_id as count')
+      .first(),
+    db('members')
+      .where({ gym_id: gymId })
+      .whereNull('archived_at')
+      .select('status')
+      .count('id as count')
+      .groupBy('status'),
+    // Roster split by sex. A gym running without a camera has no check-ins
+    // and no live occupancy, so this is what its dashboard shows instead.
+    db('members')
+      .where({ gym_id: gymId })
+      .whereNull('archived_at')
+      .select('sex')
+      .count('id as count')
+      .groupBy('sex'),
+    checkInModel.peakHours(gymId, 14),
+  ]);
+
+  const bySex = { male: 0, female: 0, unspecified: 0 };
+  for (const row of sexCounts as { sex: string | null; count: string }[]) {
+    const bucket = row.sex === 'male' || row.sex === 'female' ? row.sex : 'unspecified';
+    bySex[bucket] += Number(row.count);
+  }
 
   res.json({
     check_ins_today: checkInsToday,
@@ -40,6 +61,8 @@ export async function stats(req: Request, res: Response): Promise<void> {
     members_by_status: Object.fromEntries(
       (memberCounts as { status: string; count: string }[]).map((r) => [r.status, Number(r.count)]),
     ),
+    members_by_sex: bySex,
+    members_total: bySex.male + bySex.female + bySex.unspecified,
     peak_hours: peakHours,
   });
 }
