@@ -100,7 +100,8 @@ export async function runAbsenceNudges(now = new Date()): Promise<void> {
  * was sent today, the owner gets check-ins, revenue marked today, and
  * tomorrow's expiring members.
  */
-export async function runClosingSummaries(now = new Date()): Promise<void> {
+export async function runClosingSummaries(now = new Date()): Promise<boolean> {
+  let sent = false;
   for (const gym of await gymModel.listAll()) {
     if (!botManager.getBot(gym.id)) continue;
     const settings = gymModel.getSettings(gym);
@@ -136,7 +137,9 @@ export async function runClosingSummaries(now = new Date()): Promise<void> {
       }),
       { check_ins: checkIns, revenue },
     );
+    sent = true;
   }
+  return sent;
 }
 
 /**

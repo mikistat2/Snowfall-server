@@ -6,6 +6,7 @@ import * as billingModel from '../models/billingModel';
 import * as billingService from '../services/billingService';
 import * as platformAdminModel from '../models/platformAdminModel';
 import type { PlatformAdminPerms } from '../models/platformAdminModel';
+import type { GymRow } from '../types';
 
 export interface PlatformAuth {
   /** true only for the product owner (env credentials) — full access. */
@@ -20,6 +21,8 @@ declare global {
   namespace Express {
     interface Request {
       auth: AccessPayload;
+      /** Set by blockFrozenGym so requireActiveSubscription need not refetch. */
+      gym?: GymRow;
       platform?: PlatformAuth;
     }
   }
@@ -91,6 +94,7 @@ export function requirePlatformPerm(perm: keyof PlatformAdminPerms) {
 export async function blockFrozenGym(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const gym = await gymModel.findById(req.auth.gymId);
   if (!gym) throw unauthorized('Gym no longer exists');
+  req.gym = gym;
   if (gym.status === 'frozen') {
     throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
   }
@@ -119,8 +123,9 @@ export async function requireActiveSubscription(
 ): Promise<void> {
   const settings = await billingModel.getSettings();
   if (!settings.payments_required) return next();
-
-  const gym = await gymModel.findById(req.auth.gymId);
+  // blockFrozenGym already loaded (and validated) this row earlier in the
+  // chain — reuse it rather than paying a second Neon round-trip per request.
+  const gym = req.gym ?? (await gymModel.findById(req.auth.gymId));
   if (!gym) throw unauthorized('Gym no longer exists');
   if (billingService.hasAccess(gym, settings)) return next();
 

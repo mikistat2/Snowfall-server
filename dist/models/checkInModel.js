@@ -8,6 +8,7 @@ exports.findById = findById;
 exports.findOpenByMember = findOpenByMember;
 exports.checkout = checkout;
 exports.autoCheckoutStale = autoCheckoutStale;
+exports.autoCheckoutAllOpen = autoCheckoutAllOpen;
 exports.listRecentByMember = listRecentByMember;
 exports.countToday = countToday;
 exports.lastCheckInPerMember = lastCheckInPerMember;
@@ -66,13 +67,34 @@ async function checkout(id, method, trx = knex_1.db) {
         .returning('*');
     return row;
 }
-/** Auto-close open sessions older than `hours`. Returns affected gym ids. */
-async function autoCheckoutStale(hours) {
+/**
+ * Auto-close a gym's open sessions older than `hours`. Returns affected gym ids.
+ *
+ * Scoped to one gym on purpose. Without the `gym_id` filter this updated every
+ * tenant's rows, so the first gym the job iterated applied *its*
+ * auto_checkout_hours to everybody — a gym with a 3-hour rule silently got a
+ * 12-hour one — and each of the N iterations re-scanned the whole table.
+ */
+async function autoCheckoutStale(gymId, hours) {
     return (0, knex_1.db)('check_ins')
+        .where({ gym_id: gymId })
         .whereNull('checked_out_at')
         .where('checked_in_at', '<', new Date(Date.now() - hours * 60 * 60 * 1000))
         .update({ checked_out_at: knex_1.db.fn.now(), checkout_method: 'auto' })
         .returning('gym_id');
+}
+/**
+ * Close everything still open for a gym in one statement (closing time).
+ * Returns how many sessions were closed.
+ */
+async function autoCheckoutAllOpen(gymId) {
+    const rows = await (0, knex_1.db)('check_ins')
+        .where({ gym_id: gymId })
+        .whereNull('checked_out_at')
+        .whereIn('decision', ['allowed', 'override'])
+        .update({ checked_out_at: knex_1.db.fn.now(), checkout_method: 'auto' })
+        .returning('id');
+    return rows.length;
 }
 async function listRecentByMember(memberId, limit = 30) {
     return (0, knex_1.db)('check_ins').where({ member_id: memberId }).orderBy('checked_in_at', 'desc').limit(limit);

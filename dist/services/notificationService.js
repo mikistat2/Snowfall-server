@@ -126,6 +126,7 @@ async function runAbsenceNudges(now = new Date()) {
  * tomorrow's expiring members.
  */
 async function runClosingSummaries(now = new Date()) {
+    let sent = false;
     for (const gym of await gymModel.listAll()) {
         if (!botManager.getBot(gym.id))
             continue;
@@ -155,7 +156,9 @@ async function runClosingSummaries(now = new Date()) {
             revenue,
             expiringTomorrow: expiring.map((e) => e.full_name),
         }), { check_ins: checkIns, revenue });
+        sent = true;
     }
+    return sent;
 }
 /**
  * Called after each unknown-face event: alert the owner once per day when an

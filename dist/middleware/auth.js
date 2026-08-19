@@ -115,6 +115,7 @@ async function blockFrozenGym(req, _res, next) {
     const gym = await gymModel.findById(req.auth.gymId);
     if (!gym)
         throw (0, errors_1.unauthorized)('Gym no longer exists');
+    req.gym = gym;
     if (gym.status === 'frozen') {
         throw (0, errors_1.forbidden)('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
     }
@@ -139,7 +140,9 @@ async function requireActiveSubscription(req, _res, next) {
     const settings = await billingModel.getSettings();
     if (!settings.payments_required)
         return next();
-    const gym = await gymModel.findById(req.auth.gymId);
+    // blockFrozenGym already loaded (and validated) this row earlier in the
+    // chain — reuse it rather than paying a second Neon round-trip per request.
+    const gym = req.gym ?? (await gymModel.findById(req.auth.gymId));
     if (!gym)
         throw (0, errors_1.unauthorized)('Gym no longer exists');
     if (billingService.hasAccess(gym, settings))

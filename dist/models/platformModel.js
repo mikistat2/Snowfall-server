@@ -111,11 +111,21 @@ async function approveGym(gymId) {
     });
     return ends;
 }
-/** Extend the subscription one year (from its current end if still in the future). */
-async function renewGym(gymId) {
+/**
+ * Extend the subscription by one month or one year.
+ *
+ * By default the new period stacks on whatever time is left, which is what a
+ * renewal means. `fromNow` drops that remainder and starts the paid period
+ * today — used when converting a free trial, where the leftover trial days
+ * were never paid for.
+ */
+async function renewGym(gymId, cycle = 'YEARLY', fromNow = false) {
+    // Both fragments are literals chosen here, never caller-supplied strings.
+    const interval = cycle === 'MONTHLY' ? '1 month' : '1 year';
+    const base = fromNow ? 'now()' : 'GREATEST(now(), COALESCE(subscription_ends_at, now()))';
     const { rows } = await knex_1.db.raw(`
     UPDATE gyms
-      SET subscription_ends_at = GREATEST(now(), COALESCE(subscription_ends_at, now())) + interval '1 year',
+      SET subscription_ends_at = ${base} + interval '${interval}',
           is_trial = FALSE,
           approved_at = COALESCE(approved_at, now())
       WHERE id = ?

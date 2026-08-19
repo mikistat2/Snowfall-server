@@ -44,7 +44,7 @@ async function stats(req, res) {
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const [checkInsToday, occupancy, revenueThisMonth, expiringSoonRow, memberCounts, peakHours] = await Promise.all([
+    const [checkInsToday, occupancy, revenueThisMonth, expiringSoonRow, memberCounts, sexCounts, peakHours,] = await Promise.all([
         checkInModel.countToday(gymId, now),
         occupancyService.getOccupancy(gymId),
         paymentModel.revenueSince(gymId, startOfMonth),
@@ -62,14 +62,29 @@ async function stats(req, res) {
             .select('status')
             .count('id as count')
             .groupBy('status'),
+        // Roster split by sex. A gym running without a camera has no check-ins
+        // and no live occupancy, so this is what its dashboard shows instead.
+        (0, knex_1.db)('members')
+            .where({ gym_id: gymId })
+            .whereNull('archived_at')
+            .select('sex')
+            .count('id as count')
+            .groupBy('sex'),
         checkInModel.peakHours(gymId, 14),
     ]);
+    const bySex = { male: 0, female: 0, unspecified: 0 };
+    for (const row of sexCounts) {
+        const bucket = row.sex === 'male' || row.sex === 'female' ? row.sex : 'unspecified';
+        bySex[bucket] += Number(row.count);
+    }
     res.json({
         check_ins_today: checkInsToday,
         occupancy,
         revenue_this_month: revenueThisMonth,
         expiring_in_7_days: Number(expiringSoonRow?.count ?? 0),
         members_by_status: Object.fromEntries(memberCounts.map((r) => [r.status, Number(r.count)])),
+        members_by_sex: bySex,
+        members_total: bySex.male + bySex.female + bySex.unspecified,
         peak_hours: peakHours,
     });
 }

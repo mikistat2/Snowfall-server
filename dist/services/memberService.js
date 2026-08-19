@@ -41,6 +41,7 @@ exports.archive = archive;
 exports.restore = restore;
 exports.remove = remove;
 exports.detail = detail;
+exports.updateMember = updateMember;
 const knex_1 = require("../db/knex");
 const gymModel = __importStar(require("../models/gymModel"));
 const memberModel = __importStar(require("../models/memberModel"));
@@ -150,7 +151,10 @@ async function enrollPrevious(input) {
         const plan = await planModel.findById(input.gymId, input.planId);
         if (!plan || !plan.active)
             throw (0, errors_1.badRequest)('Plan not found or inactive');
-        const member = await memberModel.create(input.gymId, { ...input.member, joined_at: joinedAt }, trx);
+        const member = await memberModel.create(input.gymId, 
+        // joined_at is TIMESTAMPTZ: pin it to noon UTC so the calendar day cannot
+        // slip when Postgres and the API disagree about the local timezone
+        { ...input.member, joined_at: (0, dates_1.dateAtNoonUtc)(joinedAt) }, trx);
         if (input.descriptors.length > 0) {
             await memberModel.addDescriptors(member.id, input.descriptors, trx);
         }
@@ -171,7 +175,7 @@ async function enrollPrevious(input) {
                 method: input.payment.method,
                 marked_by: input.userId,
                 note: input.payment.note ?? 'Previous member (paper record)',
-                created_at: startsAt,
+                created_at: (0, dates_1.dateAtNoonUtc)(startsAt),
             }, trx);
         }
         const status = await (0, statusService_1.recomputeMemberStatus)(member.id, settings, trx);
@@ -329,5 +333,91 @@ async function detail(gymId, memberId) {
         memberModel.descriptorCount(memberId),
     ]);
     return { member, subscriptions, payments, check_ins: checkIns, descriptor_count: descriptors };
+}
+/**
+ * Admin correction of an existing member.
+ *
+ * Two different kinds of change arrive through here, and they are deliberately
+ * validated together rather than as two endpoints: fixing a misspelled name and
+ * fixing the dates that name was typed in with are the same job to the person
+ * doing it, and a start date can only be judged against the join date it is
+ * being saved beside.
+ *
+ * The subscription half rewrites the member's *current* period in place. It
+ * does not create a subscription, take a payment, or touch the payment history:
+ * this is for a row that was entered wrong, not for a renewal — that is what
+ * `paymentService.renew` is for, and it is the only thing that may move money.
+ */
+async function updateMember(input) {
+    const gym = await gymModel.findById(input.gymId);
+    if (!gym)
+        throw (0, errors_1.notFound)('Gym not found');
+    const settings = gymModel.getSettings(gym);
+    const member = await memberModel.findById(input.gymId, input.memberId);
+    if (!member)
+        throw (0, errors_1.notFound)('Member not found');
+    const today = (0, dates_1.dateOnly)(new Date());
+    if (input.joinedAt && (0, dates_1.daysBetween)(today, input.joinedAt) > 0) {
+        throw (0, errors_1.badRequest)('Registration date cannot be in the future');
+    }
+    // whichever join date the record will end up with, old or new
+    const joinedAt = input.joinedAt ?? (0, dates_1.dateOnlyUtc)(member.joined_at);
+    await knex_1.db.transaction(async (trx) => {
+        const memberPatch = { ...input.member };
+        if (input.joinedAt)
+            memberPatch.joined_at = (0, dates_1.dateAtNoonUtc)(input.joinedAt);
+        if (Object.keys(memberPatch).length > 0) {
+            await memberModel.update(input.gymId, input.memberId, memberPatch, trx);
+        }
+        if (input.subscription) {
+            const sub = await subscriptionModel.findLatestByMember(input.memberId, trx);
+            if (!sub) {
+                throw (0, errors_1.badRequest)('This member has no subscription yet — use Renew to give them one');
+            }
+            let planId = sub.plan_id;
+            if (input.subscription.planId != null && input.subscription.planId !== sub.plan_id) {
+                const plan = await planModel.findById(input.gymId, input.subscription.planId);
+                if (!plan)
+                    throw (0, errors_1.badRequest)('Plan not found');
+                planId = plan.id;
+            }
+            const startsAt = input.subscription.startsAt ?? String(sub.starts_at).slice(0, 10);
+            const expiresAt = input.subscription.expiresAt ?? String(sub.expires_at).slice(0, 10);
+            if ((0, dates_1.daysBetween)(joinedAt, startsAt) < 0) {
+                throw (0, errors_1.badRequest)('Membership start date cannot be before the registration date');
+            }
+            if ((0, dates_1.daysBetween)(startsAt, expiresAt) < 0) {
+                throw (0, errors_1.badRequest)('Expiry date cannot be before the membership start date');
+            }
+            // A frozen membership is stored as "N days were left when it stopped".
+            // Moving the expiry without moving that number would silently be undone
+            // the moment someone unfreezes them.
+            const frozenPatch = sub.status === 'frozen' ? { frozen_days_remaining: Math.max(0, (0, dates_1.daysBetween)(today, expiresAt)) } : {};
+            await subscriptionModel.update(sub.id, { plan_id: planId, starts_at: startsAt, expires_at: expiresAt, ...frozenPatch }, trx);
+        }
+        await (0, statusService_1.recomputeMemberStatus)(input.memberId, settings, trx);
+        await auditLogModel.log({
+            gym_id: input.gymId,
+            user_id: input.userId,
+            action: 'member.updated',
+            entity: 'member',
+            entity_id: input.memberId,
+            // the log carries what actually changed, so a disputed expiry date can
+            // be traced back to who moved it and what it was before
+            meta: {
+                before: {
+                    full_name: member.full_name,
+                    phone: member.phone,
+                    sex: member.sex,
+                    joined_at: (0, dates_1.dateOnlyUtc)(member.joined_at),
+                },
+                after: { ...input.member, ...(input.joinedAt ? { joined_at: input.joinedAt } : {}) },
+                subscription: input.subscription ?? null,
+            },
+        }, trx);
+    });
+    // an expiry that just moved must not be judged against a cached door decision
+    (0, checkInService_1.clearDebounce)(input.gymId, input.memberId);
+    return (await memberModel.findById(input.gymId, input.memberId));
 }
 //# sourceMappingURL=memberService.js.map

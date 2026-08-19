@@ -365,13 +365,18 @@ async function activate(ctx, base, grantedCycle, verifiedReference, checks) {
  * payment so there is exactly one implementation of the expiry rule, and it
  * carries no `verified_reference` — an unverifiable payment must stay visibly
  * different from a bank-verified one.
+ *
+ * `startNow` starts the paid period today instead of stacking it on the time
+ * that is left. That is what converting a free trial means: the unused trial
+ * days were never paid for, so they are not added on top of the month bought.
  */
 async function recordManualPayment(input) {
     const [settings, gym] = await Promise.all([billingModel.getSettings(), gymModel.findById(input.gymId)]);
     if (!gym)
         throw (0, errors_1.notFound)('Gym not found');
     const plan = input.planId ? await billingModel.findPlan(input.planId) : null;
-    const { start, end } = (0, billingChecks_1.computePeriod)(gym.subscription_ends_at, input.cycle);
+    const { start, end } = (0, billingChecks_1.computePeriod)(input.startNow ? null : gym.subscription_ends_at, input.cycle);
+    const wasTrial = gym.is_trial;
     const payment = await knex_1.db.transaction(async (trx) => {
         const row = await billingModel.createPayment({
             gym_id: gym.id,
@@ -390,7 +395,10 @@ async function recordManualPayment(input) {
             recorded_by: input.recordedBy,
             note: input.note,
             verified_at: new Date(),
-            warnings: ['Recorded by a platform admin — not verified against a bank receipt.'],
+            warnings: [
+                'Recorded by a platform admin — not verified against a bank receipt.',
+                ...(wasTrial ? ['Converted this gym from its free trial to a paid subscription.'] : []),
+            ],
         }, trx);
         await trx('gyms').where({ id: gym.id }).update({
             subscription_ends_at: end,
@@ -402,6 +410,11 @@ async function recordManualPayment(input) {
         });
         return row;
     });
-    return { payment, expiresAt: end.toISOString() };
+    return {
+        payment,
+        expiresAt: end.toISOString(),
+        startsAt: start.toISOString(),
+        convertedFromTrial: wasTrial,
+    };
 }
 //# sourceMappingURL=billingService.js.map

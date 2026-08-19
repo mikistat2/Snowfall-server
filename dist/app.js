@@ -10,6 +10,7 @@ const helmet_1 = __importDefault(require("helmet"));
 const env_1 = require("./config/env");
 const routes_1 = require("./routes");
 const error_1 = require("./middleware/error");
+const activity_1 = require("./utils/activity");
 function createApp() {
     const app = (0, express_1.default)();
     // Render/Vercel sit behind a reverse proxy — needed for correct client IPs
@@ -18,7 +19,16 @@ function createApp() {
     app.use((0, helmet_1.default)());
     app.use((0, cors_1.default)({ origin: env_1.env.corsOrigins, credentials: true }));
     app.use(express_1.default.json({ limit: '10mb' })); // face descriptors + photo data URLs
+    // Cheap liveness probe for UptimeRobot — deliberately does NOT touch the
+    // database, so a Neon wake-up can never make the monitor report the service
+    // as down. Warming the database is the keep-alive job's business, and this
+    // route is excluded from activity tracking below so that a monitor ping is
+    // never mistaken for a person using the app.
     app.get('/health', (_req, res) => res.json({ ok: true }));
+    app.use((_req, _res, next) => {
+        (0, activity_1.markActivity)();
+        next();
+    });
     app.use('/api/v1', routes_1.api);
     app.use(error_1.errorHandler);
     return app;

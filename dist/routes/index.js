@@ -131,6 +131,31 @@ const previousMemberSchema = zod_1.z.object({
     })
         .optional(),
 });
+/**
+ * Admin correction of an existing member — a patch, so every key is optional
+ * and an absent one means "leave it alone".
+ *
+ * Wider than `memberInfoSchema`: phone and sex are nullable here because
+ * clearing a wrong value is as much a correction as typing a right one, and the
+ * dates a member was created with are editable too. `subscription` rewrites the
+ * member's current period in place; it never takes a payment.
+ */
+const memberUpdateSchema = zod_1.z
+    .object({
+    full_name: zod_1.z.string().min(2).optional(),
+    phone: zod_1.z.string().nullable().optional(),
+    sex: zod_1.z.enum(['male', 'female']).nullable().optional(),
+    photo_url: zod_1.z.string().nullable().optional(),
+    joined_at: dateOnlyString.optional(),
+    subscription: zod_1.z
+        .object({
+        plan_id: zod_1.z.number().int().positive().optional(),
+        starts_at: dateOnlyString.optional(),
+        expires_at: dateOnlyString.optional(),
+    })
+        .optional(),
+})
+    .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
 const renewSchema = zod_1.z.object({
     plan_id: zod_1.z.number().int().positive(),
     amount: zod_1.z.number().nonnegative().optional(),
@@ -260,7 +285,7 @@ exports.api.get('/members/export', (0, async_1.asyncHandler)(members.exportData)
 exports.api.post('/members', (0, validate_1.validate)(enrollSchema), (0, async_1.asyncHandler)(members.enroll));
 exports.api.post('/members/previous', (0, validate_1.validate)(previousMemberSchema), (0, async_1.asyncHandler)(members.enrollPrevious));
 exports.api.get('/members/:id', (0, async_1.asyncHandler)(members.detail));
-exports.api.put('/members/:id', (0, validate_1.validate)(memberInfoSchema.partial()), (0, async_1.asyncHandler)(members.update));
+exports.api.put('/members/:id', (0, validate_1.validate)(memberUpdateSchema), (0, async_1.asyncHandler)(members.update));
 exports.api.post('/members/:id/descriptors', (0, validate_1.validate)(zod_1.z.object({ descriptors: zod_1.z.array(descriptor).min(1).max(5), replace: zod_1.z.boolean().optional() })), (0, async_1.asyncHandler)(members.addDescriptors));
 exports.api.post('/members/:id/renew', (0, validate_1.validate)(renewSchema), (0, async_1.asyncHandler)(members.renew));
 // Removing someone is owner-only, like every other destructive action here.

@@ -1,5 +1,6 @@
 import type { Knex } from 'knex';
 import { env } from './env';
+import { KEEPALIVE_INTERVAL_MINUTES } from '../utils/activity';
 
 /**
  * Shared Knex connection config (used by the app AND the knex CLI).
@@ -27,8 +28,23 @@ export function buildConnection(): Knex.Config['connection'] {
   };
 }
 
+/**
+ * `min: 0` on purpose: a connection held open against a suspended Neon compute
+ * gets torn down and reconnected, and every reconnect wakes the compute — which
+ * is exactly the bill we are trying not to pay overnight.
+ *
+ * `idleTimeoutMillis` is instead raised above the keep-alive interval
+ * (KEEPALIVE_INTERVAL_MINUTES), so while the app is in use the warm ping's own
+ * connection never idles out and real requests reuse it, arriving to an already
+ * established TLS session rather than paying a handshake. Once traffic stops
+ * the ping stops, the pool drains to zero, and Neon is free to suspend.
+ */
 export const knexConfig: Knex.Config = {
   client: 'pg',
   connection: buildConnection(),
-  pool: { min: 0, max: 10 },
+  pool: {
+    min: 0,
+    max: 10,
+    idleTimeoutMillis: KEEPALIVE_INTERVAL_MINUTES * 60_000 + 60_000,
+  },
 };

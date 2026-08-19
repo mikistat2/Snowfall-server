@@ -78,13 +78,38 @@ export async function checkout(
   return row;
 }
 
-/** Auto-close open sessions older than `hours`. Returns affected gym ids. */
-export async function autoCheckoutStale(hours: number): Promise<{ gym_id: number }[]> {
+/**
+ * Auto-close a gym's open sessions older than `hours`. Returns affected gym ids.
+ *
+ * Scoped to one gym on purpose. Without the `gym_id` filter this updated every
+ * tenant's rows, so the first gym the job iterated applied *its*
+ * auto_checkout_hours to everybody — a gym with a 3-hour rule silently got a
+ * 12-hour one — and each of the N iterations re-scanned the whole table.
+ */
+export async function autoCheckoutStale(
+  gymId: number,
+  hours: number,
+): Promise<{ gym_id: number }[]> {
   return db('check_ins')
+    .where({ gym_id: gymId })
     .whereNull('checked_out_at')
     .where('checked_in_at', '<', new Date(Date.now() - hours * 60 * 60 * 1000))
     .update({ checked_out_at: db.fn.now(), checkout_method: 'auto' })
     .returning('gym_id');
+}
+
+/**
+ * Close everything still open for a gym in one statement (closing time).
+ * Returns how many sessions were closed.
+ */
+export async function autoCheckoutAllOpen(gymId: number): Promise<number> {
+  const rows = await db('check_ins')
+    .where({ gym_id: gymId })
+    .whereNull('checked_out_at')
+    .whereIn('decision', ['allowed', 'override'])
+    .update({ checked_out_at: db.fn.now(), checkout_method: 'auto' })
+    .returning('id');
+  return rows.length;
 }
 
 export async function listRecentByMember(memberId: number, limit = 30): Promise<CheckInRow[]> {

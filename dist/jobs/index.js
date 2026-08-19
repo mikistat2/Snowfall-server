@@ -39,6 +39,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.startJobs = startJobs;
 exports.autoCheckout = autoCheckout;
 const node_cron_1 = __importDefault(require("node-cron"));
+const activity_1 = require("../utils/activity");
+const knex_1 = require("../db/knex");
 const statusService_1 = require("../services/statusService");
 const checkInModel = __importStar(require("../models/checkInModel"));
 const gymModel = __importStar(require("../models/gymModel"));
@@ -55,7 +57,18 @@ const platformAlert = __importStar(require("../services/platformAlertService"));
  *  - every 10 min: daily closing summary to owners (once, after closing time).
  * (Phase 3 adds guest descriptor purge.)
  */
+/**
+ * Safety net for the two periodic sweeps: even with no signal at all, each one
+ * still makes a full authoritative pass this often, so a missed wake-up
+ * self-heals rather than parking a sweep indefinitely. Six hours is far below
+ * the shortest deadline either job serves (a same-day closing summary) and far
+ * above the cadence at which idle wake-ups would cost real compute.
+ */
+const SWEEP_SAFETY_MS = 6 * 60 * 60 * 1000;
+const checkoutSweep = (0, activity_1.createSweepGate)(SWEEP_SAFETY_MS);
+const summarySweep = (0, activity_1.createSweepGate)(SWEEP_SAFETY_MS);
 function startJobs() {
+    startDbKeepAlive();
     node_cron_1.default.schedule('5 0 * * *', async () => {
         try {
             await (0, statusService_1.recomputeAllGyms)();
@@ -69,8 +82,11 @@ function startJobs() {
         }
     });
     node_cron_1.default.schedule('*/15 * * * *', async () => {
+        if (!checkoutSweep.shouldRun())
+            return;
+        const token = checkoutSweep.start();
         try {
-            await autoCheckout();
+            checkoutSweep.finish(token, await autoCheckout());
         }
         catch (err) {
             // eslint-disable-next-line no-console
@@ -90,8 +106,11 @@ function startJobs() {
         }
     });
     node_cron_1.default.schedule('*/10 * * * *', async () => {
+        if (!summarySweep.shouldRun())
+            return;
+        const token = summarySweep.start();
         try {
-            await notificationService.runClosingSummaries();
+            summarySweep.finish(token, await notificationService.runClosingSummaries());
         }
         catch (err) {
             // eslint-disable-next-line no-console
@@ -118,29 +137,54 @@ function startJobs() {
         }
     });
 }
+/**
+ * Keeps the Neon compute from suspending while the app is in use.
+ *
+ * UptimeRobot's ping hits /health, which answers without touching Postgres —
+ * so it keeps Render awake while the database still went cold after a few idle
+ * minutes, and the first staff member to load a page paid the wake-up. This
+ * runs a real (trivial) query on a cadence below Neon's autosuspend delay.
+ *
+ * It only fires while someone is actually using the API. A gym that closed an
+ * hour ago stops being warmed, the compute suspends, and the monthly
+ * compute-hour usage tracks real usage instead of a guessed opening schedule.
+ */
+function startDbKeepAlive() {
+    node_cron_1.default.schedule(`*/${activity_1.KEEPALIVE_INTERVAL_MINUTES} * * * *`, async () => {
+        if (!(0, activity_1.isRecentlyActive)())
+            return;
+        try {
+            await knex_1.db.raw('SELECT 1');
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[jobs] db keep-alive failed', err);
+        }
+    });
+}
 async function autoCheckout() {
     const gyms = await gymModel.listAll();
     const touched = new Set();
     const now = new Date();
     for (const gym of gyms) {
         const settings = gymModel.getSettings(gym);
-        // sessions older than auto_checkout_hours
-        const stale = await checkInModel.autoCheckoutStale(settings.auto_checkout_hours);
+        // sessions older than this gym's auto_checkout_hours
+        const stale = await checkInModel.autoCheckoutStale(gym.id, settings.auto_checkout_hours);
         stale.forEach((r) => touched.add(r.gym_id));
-        // everything still open after closing time
+        // everything still open after closing time — one statement, not one
+        // round-trip per open session
         const [h, m] = settings.closing_time.split(':').map(Number);
         const closing = new Date(now);
         closing.setHours(h ?? 22, m ?? 0, 0, 0);
         if (now >= closing) {
-            const open = await checkInModel.listOpen(gym.id);
-            for (const session of open) {
-                await checkInModel.checkout(session.id, 'auto');
+            const closed = await checkInModel.autoCheckoutAllOpen(gym.id);
+            if (closed > 0)
                 touched.add(gym.id);
-            }
         }
     }
     for (const gymId of touched) {
         await occupancyService.resync(gymId);
     }
+    return touched.size > 0;
 }
 //# sourceMappingURL=index.js.map

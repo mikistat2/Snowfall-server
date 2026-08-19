@@ -190,7 +190,16 @@ async function approveGym(req, res) {
     const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString()));
     res.json({ ok: true, subscription_ends_at: ends, notified });
 }
-/** Extend the yearly subscription by one year (also converts a trial to paid). */
+/**
+ * Extend the subscription by one month or one year (also converts a trial to
+ * paid). No payment row is written here — this is the goodwill/free path. To
+ * convert a trial AND keep a record of the money, use
+ * POST /gyms/:id/record-payment instead.
+ *
+ * A trial conversion defaults to starting today: the days left on a free trial
+ * are not something the gym paid for, so they are not carried into the paid
+ * period unless the caller explicitly asks.
+ */
 async function renewGym(req, res) {
     const id = Number(req.params.id);
     const gym = await gymModel.findById(id);
@@ -198,7 +207,8 @@ async function renewGym(req, res) {
         throw (0, errors_1.notFound)('Gym not found');
     if (gym.status === 'pending')
         throw (0, errors_1.forbidden)('Approve the registration first');
-    const ends = await platformModel.renewGym(id);
+    const { cycle = 'YEARLY', fromNow } = req.body;
+    const ends = await platformModel.renewGym(id, cycle, fromNow ?? gym.is_trial);
     const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString()));
     res.json({ ok: true, subscription_ends_at: ends, notified });
 }

@@ -73,7 +73,12 @@ exports.adminRouter.get('/gyms/:id', (0, async_1.asyncHandler)(admin.gymDetail))
 exports.adminRouter.put('/gyms/:id/note', (0, validate_1.validate)(zod_1.z.object({ note: zod_1.z.string().max(1000).nullable() })), (0, async_1.asyncHandler)(admin.updateNote));
 // permission-gated (the owner always passes)
 exports.adminRouter.post('/gyms/:id/approve', (0, auth_1.requirePlatformPerm)('approve'), (0, async_1.asyncHandler)(admin.approveGym));
-exports.adminRouter.post('/gyms/:id/renew', (0, auth_1.requirePlatformPerm)('renew'), (0, async_1.asyncHandler)(admin.renewGym));
+exports.adminRouter.post('/gyms/:id/renew', (0, auth_1.requirePlatformPerm)('renew'), 
+// Body is optional: no body at all still means "+1 year", as it always did.
+(0, validate_1.validate)(zod_1.z
+    .object({ cycle: zod_1.z.enum(['MONTHLY', 'YEARLY']), fromNow: zod_1.z.boolean() })
+    .partial()
+    .default({})), (0, async_1.asyncHandler)(admin.renewGym));
 exports.adminRouter.post('/gyms/:id/freeze', (0, auth_1.requirePlatformPerm)('freeze'), (0, validate_1.validate)(zod_1.z.object({ note: zod_1.z.string().max(1000).optional() })), (0, async_1.asyncHandler)(admin.freezeGym));
 exports.adminRouter.post('/gyms/:id/unfreeze', (0, auth_1.requirePlatformPerm)('freeze'), (0, async_1.asyncHandler)(admin.unfreezeGym));
 exports.adminRouter.get('/export', (0, auth_1.requirePlatformPerm)('export'), (0, async_1.asyncHandler)(admin.exportAllMembers));
@@ -126,6 +131,8 @@ exports.adminRouter.post('/gyms/:id/record-payment', (0, auth_1.requirePlatformP
     amount: zod_1.z.number().nonnegative(),
     provider: zod_1.z.enum(['CASH', 'CBE', 'TELEBIRR']).default('CASH'),
     note: zod_1.z.string().min(1).max(1000),
+    /** Omitted → the server starts trials today and stacks everyone else. */
+    startNow: zod_1.z.boolean().optional(),
 })), (0, async_1.asyncHandler)(billing.recordPayment));
 exports.adminRouter.put('/gyms/:id/comped', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z.object({ comped: zod_1.z.boolean() })), (0, async_1.asyncHandler)(billing.setComped));
 const permsSchema = zod_1.z.object({
