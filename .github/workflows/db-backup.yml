@@ -1,0 +1,139 @@
+name: Nightly database backup
+
+# 01:00 UTC = 04:00 in Addis, hours after the last gym closes, so the dump
+# never competes with real traffic and the compute it wakes is compute that
+# would otherwise be idle anyway.
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch: # restore drills and one-off dumps
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+env:
+  # Must be >= the Postgres major Neon runs (a newer pg_dump can dump an older
+  # server, never the reverse). Bump when you upgrade the Neon project — and
+  # bump the `postgres:17` verify service below with it, since the `env`
+  # context is not available in a `services` image and cannot read this.
+  PG_MAJOR: '17'
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # The dump is restored into this throwaway server before it is accepted,
+    # so a corrupt or truncated dump fails the run instead of sitting in the
+    # artifact list looking like a backup.
+    services:
+      verify:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: verify
+          POSTGRES_DB: verify
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Install pg_dump / pg_restore from PGDG
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends "postgresql-client-${PG_MAJOR}"
+          pg_dump --version
+
+      - name: Dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$DATABASE_URL" || { echo "::error::DATABASE_URL secret is empty"; exit 1; }
+          echo "STAMP=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+          # Custom format: compressed already, and pg_restore can go selective
+          # (one table back) instead of all-or-nothing like a plain SQL file.
+          pg_dump --format=custom --no-owner --no-privileges \
+                  --file="backup-$(date -u +%Y-%m-%d).dump" "$DATABASE_URL"
+
+      - name: Reject an implausibly small dump
+        run: |
+          set -euo pipefail
+          bytes=$(stat -c%s "backup-${STAMP}.dump")
+          echo "dump is ${bytes} bytes"
+          # An empty-but-valid dump of a wiped database restores cleanly and
+          # tells you nothing. 20 KB is far below a real one and far above a
+          # schema-only accident.
+          if [ "$bytes" -lt 20480 ]; then
+            echo "::error::dump is only ${bytes} bytes — refusing to call this a backup"
+            exit 1
+          fi
+
+      - name: Restore it into a throwaway Postgres and count rows
+        env:
+          PGPASSWORD: verify
+        run: |
+          set -euo pipefail
+          pg_restore --no-owner --no-privileges \
+            --dbname "postgresql://postgres@localhost:5432/verify" \
+            "backup-${STAMP}.dump"
+
+          # A restore that "succeeds" into an empty database is the failure
+          # mode this whole step exists to catch, so assert on real content.
+          read -r tables members < <(psql "postgresql://postgres@localhost:5432/verify" -tAF' ' -c "
+            SELECT (SELECT count(*) FROM information_schema.tables WHERE table_schema='public'),
+                   (SELECT count(*) FROM members);")
+          echo "restored ${tables} tables, ${members} members"
+          if [ "$tables" -lt 10 ] || [ "$members" -lt 1 ]; then
+            echo "::error::restore produced ${tables} tables / ${members} members — dump is not usable"
+            exit 1
+          fi
+
+      - name: Encrypt
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          test -n "$BACKUP_PASSPHRASE" || { echo "::error::BACKUP_PASSPHRASE secret is empty"; exit 1; }
+          # This repository is public, and artifacts on a public repository can
+          # be downloaded by anyone. The dump holds member names, phone numbers
+          # and face descriptors, so it never leaves this job in the clear.
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+              --passphrase "$BACKUP_PASSPHRASE" \
+              --output "backup-${STAMP}.dump.gpg" "backup-${STAMP}.dump"
+          rm -f "backup-${STAMP}.dump"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ env.STAMP }}
+          path: '*.dump.gpg'
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Tell me if the backup broke
+        if: failure()
+        env:
+          TOKEN: ${{ secrets.ALERT_TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.ALERT_TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ] || [ -z "${CHAT:-}" ]; then
+            echo "no alert secrets configured — skipping notification"
+            exit 0
+          fi
+          msg=$(printf '%s\n%s\n%s' \
+            "🚨 Snowfall nightly DB backup FAILED." \
+            "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "Last night's backup did not happen. Do not assume you have one.")
+          curl -fsS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT}" \
+            --data-urlencode "text=${msg}" > /dev/null
