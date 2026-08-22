@@ -44,6 +44,19 @@ export function getBot(gymId: number): BotEntry | undefined {
   return bots.get(gymId);
 }
 
+/**
+ * True when at least one gym has a running bot.
+ *
+ * Read from memory, never the database — which is the point. Every
+ * Telegram-driven cron job opens with `gymModel.listAll()` before it can
+ * discover that no gym has a bot, and that query alone wakes the Neon compute
+ * and resets its suspend timer. On a deployment where nobody uses Telegram,
+ * checking here skips those jobs without touching Postgres at all.
+ */
+export function hasAnyBot(): boolean {
+  return bots.size > 0;
+}
+
 export function getStatus(gymId: number): {
   configured: boolean;
   running: boolean;

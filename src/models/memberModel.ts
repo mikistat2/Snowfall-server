@@ -166,6 +166,34 @@ export async function hardDelete(gymId: number, id: number, trx: Knex = db): Pro
 }
 
 /** All descriptors for a gym's non-expired-beyond-recognition members (monitor cache). */
+/**
+ * Cheap change-token for `listDescriptorsByGym`, polled by the monitor in
+ * place of the full payload.
+ *
+ * The monitor needs cross-device freshness (the office enrolls a member, the
+ * tablet at the door must recognise them), which is why it polled. But the
+ * full payload is ~2.6 KB per capture — a 150-member gym re-downloaded ~2 MB
+ * every 60 seconds to learn nothing had changed.
+ *
+ * The hash covers exactly what the full response projects, so it moves if and
+ * only if that response would differ: a capture added or removed (fd.id), a
+ * member archived or deleted (row gone), a status flip that must change a
+ * door decision, or a rename.
+ */
+export async function descriptorsVersion(gymId: number): Promise<string> {
+  const { rows } = await db.raw(
+    `SELECT coalesce(
+              md5(string_agg(fd.id || ':' || m.status || ':' || m.full_name, ',' ORDER BY fd.id)),
+              'empty'
+            ) AS version
+       FROM face_descriptors fd
+       JOIN members m ON m.id = fd.member_id
+      WHERE m.gym_id = ? AND m.archived_at IS NULL`,
+    [gymId],
+  );
+  return rows[0].version as string;
+}
+
 export async function listDescriptorsByGym(gymId: number): Promise<
   { member_id: number; full_name: string; status: MemberStatus; descriptors: number[][] }[]
 > {

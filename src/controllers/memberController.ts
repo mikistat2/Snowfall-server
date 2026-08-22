@@ -107,6 +107,14 @@ export async function allDescriptors(req: Request, res: Response): Promise<void>
   res.json(await memberModel.listDescriptorsByGym(req.auth.gymId));
 }
 
+/**
+ * Change-token for the above. The monitor polls this every 60s (~50 bytes)
+ * and only re-downloads the megabyte-scale descriptor payload when it moves.
+ */
+export async function descriptorsVersion(req: Request, res: Response): Promise<void> {
+  res.json({ version: await memberModel.descriptorsVersion(req.auth.gymId) });
+}
+
 export async function addDescriptors(req: Request, res: Response): Promise<void> {
   const memberId = Number(req.params.id);
   const member = await memberModel.findById(req.auth.gymId, memberId);

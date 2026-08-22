@@ -287,6 +287,7 @@ api.delete('/plans/:id', asyncHandler(plans.remove));
 // ---------- members ----------
 api.get('/members', asyncHandler(members.list));
 api.get('/members/descriptors', asyncHandler(members.allDescriptors));
+api.get('/members/descriptors/version', asyncHandler(members.descriptorsVersion));
 api.get('/members/export', asyncHandler(members.exportData)); // before /members/:id
 api.post('/members', validate(enrollSchema), asyncHandler(members.enroll));
 api.post('/members/previous', validate(previousMemberSchema), asyncHandler(members.enrollPrevious));

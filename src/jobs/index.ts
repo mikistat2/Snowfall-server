@@ -7,6 +7,9 @@ import * as gymModel from '../models/gymModel';
 import * as occupancyService from '../services/occupancyService';
 import * as notificationService from '../services/notificationService';
 import * as guestModel from '../models/guestModel';
+import * as eventModel from '../models/eventModel';
+import * as auditLogModel from '../models/auditLogModel';
+import * as botManager from '../telegram/botManager';
 import * as platformAlert from '../services/platformAlertService';
 
 /**
@@ -31,6 +34,17 @@ const SWEEP_SAFETY_MS = 6 * 60 * 60 * 1000;
 const checkoutSweep = createSweepGate(SWEEP_SAFETY_MS);
 const summarySweep = createSweepGate(SWEEP_SAFETY_MS);
 
+/**
+ * Retention windows for the two append-only log tables, which together are
+ * more than half of each gym's storage growth on Neon's 0.5 GB free tier.
+ *
+ * Both windows sit far beyond what the UI can reach: the event feed serves the
+ * newest 50 rows per gym and the audit page the newest 200, neither paginated.
+ * Nothing displayable is deleted — this only stops the tables growing forever.
+ */
+const EVENT_RETENTION_DAYS = 90;
+const AUDIT_RETENTION_DAYS = 365;
+
 export function startJobs(): void {
   startDbKeepAlive();
 
@@ -43,6 +57,18 @@ export function startJobs(): void {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[jobs] status recompute failed', err);
+    }
+
+    // Storage retention. Runs after the recompute, inside the same nightly
+    // wake-up, so pruning never costs a compute start of its own.
+    try {
+      const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
+      const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
+      // eslint-disable-next-line no-console
+      console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs`);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[jobs] retention prune failed', err);
     }
   });
 
@@ -58,6 +84,11 @@ export function startJobs(): void {
   });
 
   cron.schedule('0 9 * * *', async () => {
+    // Both passes deliver over Telegram and already skip any gym without a
+    // running bot — but only after `gymModel.listAll()` has woken Postgres to
+    // tell them which gyms those are. When no gym has a bot at all, that wake
+    // is pure cost, so the in-memory check comes first.
+    if (!botManager.hasAnyBot()) return;
     try {
       await notificationService.runExpiryReminders();
       await notificationService.runAbsenceNudges();
@@ -70,6 +101,11 @@ export function startJobs(): void {
   });
 
   cron.schedule('*/10 * * * *', async () => {
+    // The summary is a Telegram message to owners; with no bot running there
+    // is nobody to send it to, and the sweep's opening `listAll()` would wake
+    // the compute every 10 minutes to establish that. Checked before the
+    // sweep gate so it costs nothing.
+    if (!botManager.hasAnyBot()) return;
     if (!summarySweep.shouldRun()) return;
     const token = summarySweep.start();
     try {
