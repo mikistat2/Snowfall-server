@@ -105,6 +105,32 @@ export async function blockFrozenGym(req: Request, _res: Response, next: NextFun
 }
 
 /**
+ * Platform feature entitlements (see the 20260822000008 migration).
+ *
+ * Hiding a revoked feature in the client is not enough — the endpoints have to
+ * refuse it, or a stale tab, a cached bundle or a direct API call still works.
+ * This is that refusal.
+ *
+ * Reads `req.gym`, which blockFrozenGym has already loaded for every
+ * authenticated route, so guarding a route costs no extra query. Registering
+ * it before blockFrozenGym would silently pass, hence the explicit throw.
+ */
+export function requireFeature(feature: 'camera' | 'telegram') {
+  const column = feature === 'camera' ? 'camera_allowed' : 'telegram_allowed';
+  const message =
+    feature === 'camera'
+      ? 'Face recognition is not enabled for this gym. Contact the platform administrator.'
+      : 'Telegram notifications are not enabled for this gym. Contact the platform administrator.';
+  const code = feature === 'camera' ? 'CAMERA_NOT_ALLOWED' : 'TELEGRAM_NOT_ALLOWED';
+
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.gym) throw new Error(`requireFeature('${feature}') must run after blockFrozenGym`);
+    if (!req.gym[column]) throw forbidden(message, code);
+    next();
+  };
+}
+
+/**
  * The paywall. Returns **402** with a machine-readable code — not 401 or 403,
  * which the client already spends on "log in again" and "you are frozen".
  *

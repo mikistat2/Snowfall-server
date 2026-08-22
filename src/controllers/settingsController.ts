@@ -3,13 +3,17 @@ import bcrypt from 'bcryptjs';
 import * as gymModel from '../models/gymModel';
 import * as userModel from '../models/userModel';
 import * as auditLogModel from '../models/auditLogModel';
-import { badRequest, conflict, notFound } from '../utils/errors';
+import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import { DEFAULT_SETTINGS } from '../types';
 
 export async function getGym(req: Request, res: Response): Promise<void> {
   const gym = await gymModel.findById(req.auth.gymId);
   if (!gym) throw notFound('Gym not found');
-  res.json({ ...gym, settings: { ...DEFAULT_SETTINGS, ...gym.settings } });
+  // getSettings, not a raw spread: it narrows camera_enabled by the platform
+  // entitlement, so the monitor and the settings screen see the same effective
+  // value the rest of the server enforces. `camera_allowed`/`telegram_allowed`
+  // ride along on the row so the UI can say *why* a control is locked.
+  res.json({ ...gym, settings: gymModel.getSettings(gym) });
 }
 
 export async function updateGym(req: Request, res: Response): Promise<void> {
@@ -19,6 +23,15 @@ export async function updateGym(req: Request, res: Response): Promise<void> {
 
   const tokenChanged =
     'telegram_bot_token' in info && info.telegram_bot_token !== gym.telegram_bot_token;
+  // Connecting a bot is the one settings write that a revoked entitlement has
+  // to refuse outright — everything else is a stored preference that
+  // getSettings already neutralises on read.
+  if (tokenChanged && info.telegram_bot_token && !gym.telegram_allowed) {
+    throw forbidden(
+      'Telegram notifications are not enabled for this gym. Contact the platform administrator.',
+      'TELEGRAM_NOT_ALLOWED',
+    );
+  }
 
   if (Object.keys(info).length > 0) gym = await gymModel.update(req.auth.gymId, info);
 

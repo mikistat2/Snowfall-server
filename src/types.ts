@@ -51,6 +51,19 @@ export interface GymRow {
   billing_plan_id: number | null;
   billing_cycle: BillingCycle | null;
   comped: boolean;
+  /**
+   * Platform-level entitlements, set only by the platform owner. The gym's own
+   * `settings.camera_enabled` is a preference *within* what these permit —
+   * gymModel.getSettings ANDs the two, so server logic never has to check both.
+   */
+  camera_allowed: boolean;
+  telegram_allowed: boolean;
+}
+
+/** The features the platform owner can grant or revoke per gym. */
+export interface GymFeatures {
+  camera_allowed: boolean;
+  telegram_allowed: boolean;
 }
 
 /** Single-row global platform configuration (see platform_settings table). */

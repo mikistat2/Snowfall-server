@@ -27,12 +27,23 @@ export async function detail(req: Request, res: Response): Promise<void> {
   res.json(await memberService.detail(req.auth.gymId, Number(req.params.id)));
 }
 
+/**
+ * Enrolment stays open with the camera revoked — a gym in name-board mode
+ * still signs members up — but face captures sent alongside are dropped
+ * rather than stored. The route is therefore not behind requireFeature; this
+ * is the narrower rule it needs.
+ */
+function allowedDescriptors(req: Request): number[][] {
+  if (!req.gym?.camera_allowed) return [];
+  return req.body.descriptors ?? [];
+}
+
 export async function enroll(req: Request, res: Response): Promise<void> {
   const member = await memberService.enroll({
     gymId: req.auth.gymId,
     userId: req.auth.sub,
     member: req.body.member,
-    descriptors: req.body.descriptors ?? [],
+    descriptors: allowedDescriptors(req),
     planId: req.body.plan_id,
     payment: req.body.payment,
   });
@@ -45,7 +56,7 @@ export async function enrollPrevious(req: Request, res: Response): Promise<void>
     gymId: req.auth.gymId,
     userId: req.auth.sub,
     member: req.body.member,
-    descriptors: req.body.descriptors ?? [],
+    descriptors: allowedDescriptors(req),
     planId: req.body.plan_id,
     calendar: req.body.calendar,
     enteredCalendar: req.body.entered_calendar,

@@ -83,6 +83,20 @@ adminRouter.put(
   ),
   asyncHandler(admin.updateSettings),
 );
+// Feature entitlements. Owner-only, matching the other structural switches
+// (platform settings, comped status, gym deletion) rather than the
+// day-to-day permissions granted to sub-admins.
+adminRouter.put(
+  '/gyms/:id/features',
+  requirePlatformOwner,
+  validate(
+    z
+      .object({ camera_allowed: z.boolean(), telegram_allowed: z.boolean() })
+      .partial()
+      .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' }),
+  ),
+  asyncHandler(admin.setFeatures),
+);
 adminRouter.delete(
   '/gyms/:id',
   requirePlatformOwner,

@@ -9,7 +9,9 @@ import * as platformAdminModel from '../models/platformAdminModel';
 import * as gymModel from '../models/gymModel';
 import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
-import type { BillingCycle } from '../types';
+import * as auditLogModel from '../models/auditLogModel';
+import * as botManager from '../telegram/botManager';
+import type { BillingCycle, GymFeatures } from '../types';
 
 /**
  * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
@@ -105,6 +107,53 @@ export async function unfreezeGym(req: Request, res: Response): Promise<void> {
   await platformModel.setStatus(id, 'active');
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'unfreeze'));
   res.json({ ok: true, notified });
+}
+
+/**
+ * Grant or revoke a gym's platform features (owner-only).
+ *
+ * Revoking is a lock, never a delete: enrolled face descriptors and the stored
+ * bot token both survive, so restoring the entitlement brings the gym back
+ * exactly as it was. Freeing that storage is a separate, deliberate act.
+ *
+ * Revoking Telegram stops the running bot in the same request rather than
+ * waiting for the next boot — otherwise a revoked gym keeps sending messages
+ * until the server restarts.
+ */
+export async function setFeatures(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const gym = await gymModel.findById(id);
+  if (!gym) throw notFound('Gym not found');
+
+  const body = req.body as Partial<GymFeatures>;
+  const updated = await gymModel.setFeatures(id, body);
+
+  if (body.telegram_allowed === false && gym.telegram_allowed) {
+    await botManager.stopBot(id);
+  } else if (body.telegram_allowed === true && !gym.telegram_allowed && updated.telegram_bot_token) {
+    await botManager.restartBot(id, updated.telegram_bot_token);
+  }
+
+  // Revoking the camera can strand staff on the monitor page with a live token
+  // and a now-403 recognition loop; the audit trail is what explains it.
+  await auditLogModel.log({
+    gym_id: id,
+    user_id: null,
+    action: 'platform.features_updated',
+    entity: 'gym',
+    entity_id: id,
+    meta: {
+      camera_allowed: updated.camera_allowed,
+      telegram_allowed: updated.telegram_allowed,
+      by: req.platform?.isOwner ? 'platform_owner' : 'platform_admin',
+    },
+  });
+
+  res.json({
+    ok: true,
+    camera_allowed: updated.camera_allowed,
+    telegram_allowed: updated.telegram_allowed,
+  });
 }
 
 /** Full member dump of ONE gym — the client renders it as that gym's members PDF. */

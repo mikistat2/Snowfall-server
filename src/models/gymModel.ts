@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import { db } from '../db/knex';
-import { DEFAULT_SETTINGS, type GymRow, type GymSettings } from '../types';
+import { DEFAULT_SETTINGS, type GymFeatures, type GymRow, type GymSettings } from '../types';
 
 export async function findById(id: number, trx: Knex = db): Promise<GymRow | undefined> {
   return trx('gyms').where({ id }).first();
@@ -41,8 +41,29 @@ export async function updateSettings(id: number, settings: GymSettings): Promise
   return row;
 }
 
+/**
+ * The gym's settings as the rest of the server should see them: the owner's
+ * stored preferences, narrowed by what the platform currently allows.
+ *
+ * Camera is the only setting an entitlement can override today, and folding it
+ * in here rather than at each call site means every existing consumer — the
+ * decision engine, the absence-nudge job, the enrol flow, the monitor's
+ * /settings payload — respects a revocation without changes of its own.
+ *
+ * The owner's raw `camera_enabled` is left untouched in the JSONB, so
+ * restoring the entitlement restores their original choice rather than
+ * silently turning a camera on for a gym that had switched it off.
+ */
 export function getSettings(gym: GymRow): GymSettings {
-  return { ...DEFAULT_SETTINGS, ...gym.settings };
+  const settings = { ...DEFAULT_SETTINGS, ...gym.settings };
+  if (!gym.camera_allowed) settings.camera_enabled = false;
+  return settings;
+}
+
+/** Platform-owner-only. See the 20260822000008 migration. */
+export async function setFeatures(id: number, features: Partial<GymFeatures>): Promise<GymRow> {
+  const [row] = await db('gyms').where({ id }).update(features).returning('*');
+  return row;
 }
 
 export async function listAll(): Promise<GymRow[]> {

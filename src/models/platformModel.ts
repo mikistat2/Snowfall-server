@@ -70,6 +70,9 @@ export interface GymListRow {
   is_trial: boolean;
   /** Permanently exempt from the subscription paywall. */
   comped: boolean;
+  /** Platform feature entitlements (owner-only switches). */
+  camera_allowed: boolean;
+  telegram_allowed: boolean;
   created_at: string;
   owner_name: string | null;
   owner_email: string | null;
@@ -95,6 +98,7 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
     SELECT
       g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note,
       g.approved_at, g.subscription_ends_at, g.is_trial, g.comped, g.created_at,
+      g.camera_allowed, g.telegram_allowed,
       o.name  AS owner_name,
       o.email AS owner_email,
       o.phone AS owner_phone,

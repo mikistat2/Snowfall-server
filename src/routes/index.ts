@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../utils/async';
 import { validate } from '../middleware/validate';
 import multer from 'multer';
-import { requireAuth, requireOwner, blockFrozenGym, requireActiveSubscription } from '../middleware/auth';
+import { requireAuth, requireOwner, blockFrozenGym, requireActiveSubscription, requireFeature } from '../middleware/auth';
 import { adminRouter } from './admin';
 import * as auth from '../controllers/authController';
 import * as plans from '../controllers/planController';
@@ -286,8 +286,8 @@ api.delete('/plans/:id', asyncHandler(plans.remove));
 
 // ---------- members ----------
 api.get('/members', asyncHandler(members.list));
-api.get('/members/descriptors', asyncHandler(members.allDescriptors));
-api.get('/members/descriptors/version', asyncHandler(members.descriptorsVersion));
+api.get('/members/descriptors', requireFeature('camera'), asyncHandler(members.allDescriptors));
+api.get('/members/descriptors/version', requireFeature('camera'), asyncHandler(members.descriptorsVersion));
 api.get('/members/export', asyncHandler(members.exportData)); // before /members/:id
 api.post('/members', validate(enrollSchema), asyncHandler(members.enroll));
 api.post('/members/previous', validate(previousMemberSchema), asyncHandler(members.enrollPrevious));
@@ -295,6 +295,7 @@ api.get('/members/:id', asyncHandler(members.detail));
 api.put('/members/:id', validate(memberUpdateSchema), asyncHandler(members.update));
 api.post(
   '/members/:id/descriptors',
+  requireFeature('camera'),
   validate(z.object({ descriptors: z.array(descriptor).min(1).max(5), replace: z.boolean().optional() })),
   asyncHandler(members.addDescriptors),
 );
@@ -308,7 +309,7 @@ api.post('/members/:id/freeze', asyncHandler(members.freeze));
 api.post('/members/:id/unfreeze', asyncHandler(members.unfreeze));
 
 // ---------- check-ins / monitor ----------
-api.post('/check-ins/recognize', validate(recognizeSchema), asyncHandler(checkIns.recognize));
+api.post('/check-ins/recognize', requireFeature('camera'), validate(recognizeSchema), asyncHandler(checkIns.recognize));
 api.post(
   '/check-ins/override',
   validate(z.object({ member_id: z.number().int().positive() })),
@@ -326,7 +327,7 @@ api.get('/events', asyncHandler(checkIns.recentEvents));
 
 // ---------- guests (Phase 3) ----------
 api.get('/guests', asyncHandler(guests.list));
-api.get('/guests/descriptors', asyncHandler(guests.descriptors));
+api.get('/guests/descriptors', requireFeature('camera'), asyncHandler(guests.descriptors));
 api.post('/guests', validate(guestSchema), asyncHandler(guests.create));
 api.post('/guests/:id/expire', asyncHandler(guests.expire));
 api.post(
@@ -350,8 +351,8 @@ api.get(
 );
 
 // ---------- telegram / notifications (Phase 2) ----------
-api.post('/members/:id/telegram-link', asyncHandler(telegram.memberLink));
-api.post('/telegram/owner-link', asyncHandler(telegram.ownerLink));
+api.post('/members/:id/telegram-link', requireFeature('telegram'), asyncHandler(telegram.memberLink));
+api.post('/telegram/owner-link', requireFeature('telegram'), asyncHandler(telegram.ownerLink));
 api.get('/telegram/status', asyncHandler(telegram.status));
 api.get('/notifications', asyncHandler(telegram.notifications));
 

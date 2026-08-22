@@ -199,14 +199,20 @@ export async function restartBot(gymId: number, token: string | null): Promise<v
     return;
   }
   const gym = await gymModel.findById(gymId);
+  // A stored token is not permission to run. Checked here as well as at the
+  // settings route because a token can predate the revocation.
+  if (gym && !gym.telegram_allowed) {
+    await stopBot(gymId);
+    return;
+  }
   await startBotForGym(gymId, token, gym?.name ?? 'your gym');
 }
 
-/** Boot: start bots for every gym that has a token configured. */
+/** Boot: start bots for every gym that has a token configured *and allowed*. */
 export async function initBots(): Promise<void> {
   const gyms = await gymModel.listAll();
   for (const gym of gyms) {
-    if (gym.telegram_bot_token) {
+    if (gym.telegram_bot_token && gym.telegram_allowed) {
       await startBotForGym(gym.id, gym.telegram_bot_token, gym.name);
     }
   }
