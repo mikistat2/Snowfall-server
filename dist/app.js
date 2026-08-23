@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createApp = createApp;
 const express_1 = __importDefault(require("express"));
+const compression_1 = __importDefault(require("compression"));
 const cors_1 = __importDefault(require("cors"));
 const helmet_1 = __importDefault(require("helmet"));
 const env_1 = require("./config/env");
@@ -17,10 +18,14 @@ function createApp() {
     // (rate limiting) and secure-cookie detection.
     app.set('trust proxy', 1);
     app.use((0, helmet_1.default)());
+    // Responses here are JSON, and the largest of them is a wall of float
+    // literals (face descriptors, member exports) that gzips several times over.
+    // Cheap CPU on Render in exchange for bandwidth on every plan's free tier.
+    app.use((0, compression_1.default)());
     app.use((0, cors_1.default)({ origin: env_1.env.corsOrigins, credentials: true }));
     app.use(express_1.default.json({ limit: '10mb' })); // face descriptors + photo data URLs
     // Cheap liveness probe for UptimeRobot — deliberately does NOT touch the
-    // database, so a Neon wake-up can never make the monitor report the service
+    // database, so a database wake-up can never make the monitor report the service
     // as down. Warming the database is the keep-alive job's business, and this
     // route is excluded from activity tracking below so that a monitor ping is
     // never mistaken for a person using the app.

@@ -13,8 +13,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Must be >= the Postgres major Neon runs (a newer pg_dump can dump an older
-  # server, never the reverse). Bump when you upgrade the Neon project — and
+  # Must be >= the Postgres major the database runs (a newer pg_dump can dump an
+  # older server, never the reverse). Supabase ships 15 or 17 depending on when
+  # the project was created; 17 covers both. Bump when you upgrade it — and
   # bump the `postgres:17` verify service below with it, since the `env`
   # context is not available in a `services` image and cannot read this.
   PG_MAJOR: '17'

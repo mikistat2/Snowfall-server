@@ -1,0 +1,98 @@
+name: Database size alert
+
+# Supabase's Free plan allows 500 MB of database storage. Running out means
+# writes start failing, which means check-in stops. This gives weeks of warning
+# instead of a 6am surprise.
+#
+# This replaces the old Neon CU-hour alert. Neon billed compute *time*, so the
+# quota to watch was compute-hours and it took a provider API key to read.
+# Supabase bills storage, which the database can be asked for directly — so
+# this needs no provider API key and keeps working if the host changes again.
+on:
+  schedule:
+    - cron: '30 6 * * *' # 09:30 in Addis — read it with morning coffee
+  workflow_dispatch:
+
+env:
+  QUOTA_MB: '500' # Supabase Free plan database storage
+  WARN_PERCENT: '60'
+  PG_MAJOR: '17'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install psql from PGDG
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends "postgresql-client-${PG_MAJOR}"
+
+      - name: Measure database size and alert on Telegram
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TOKEN: ${{ secrets.ALERT_TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.ALERT_TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          for v in DATABASE_URL TOKEN CHAT; do
+            if [ -z "${!v:-}" ]; then echo "::error::secret $v is empty"; exit 1; fi
+          done
+
+          notify() {
+            curl -fsS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${CHAT}" \
+              --data-urlencode "text=$1" > /dev/null
+          }
+
+          # A monitor that reports "all clear" when it is itself broken is worse
+          # than no monitor, so a failed query alerts rather than passing quietly.
+          if ! mb=$(psql "$DATABASE_URL" -tAX -c \
+              "SELECT round(pg_database_size(current_database())/1048576.0, 1);" 2>err.txt); then
+            notify "$(printf '%s\n%s\n\n%s' \
+              '⚠️ Snowfall: could not read the database size.' \
+              'The storage check did NOT run today — the database may be unreachable.' \
+              "$(head -c 300 err.txt || true)")"
+            echo "::error::psql failed"
+            exit 1
+          fi
+
+          echo "database is ${mb} MB of ${QUOTA_MB} MB"
+
+          # A live database with members in it cannot be 0 MB. If it reads zero,
+          # DATABASE_URL points somewhere empty and the number is meaningless.
+          if [ "$(awk -v m="$mb" 'BEGIN{print (m > 0) ? 1 : 0}')" -eq 0 ]; then
+            notify "$(printf '%s\n%s' \
+              '⚠️ Snowfall: the database reports 0 MB used.' \
+              'That is not possible for a live database — DATABASE_URL is pointing at the wrong place.')"
+            echo "::error::size parsed as zero"
+            exit 1
+          fi
+
+          pct=$(awk -v m="$mb" -v q="$QUOTA_MB" 'BEGIN{printf "%.0f", (m/q)*100}')
+
+          if [ "$pct" -ge "$WARN_PERCENT" ]; then
+            # The two log tables are pruned on a retention window (jobs/index.ts),
+            # so name the biggest tables — it is usually one of them that grew.
+            top=$(psql "$DATABASE_URL" -tAX -c "
+              SELECT string_agg(t, E'\n') FROM (
+                SELECT relname || ': ' || pg_size_pretty(pg_total_relation_size(c.oid)) AS t
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 5
+              ) s;" || echo '(could not list tables)')
+            notify "$(printf '%s\n%s\n\n%s\n%s' \
+              "⚠️ Snowfall database storage: ${pct}% of quota" \
+              "Using ${mb} MB of ${QUOTA_MB} MB on the Supabase Free plan." \
+              "Largest tables:" \
+              "${top}")"
+          else
+            echo "under ${WARN_PERCENT}% — staying quiet"
+          fi

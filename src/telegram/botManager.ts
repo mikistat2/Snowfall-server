@@ -49,7 +49,8 @@ export function getBot(gymId: number): BotEntry | undefined {
  *
  * Read from memory, never the database — which is the point. Every
  * Telegram-driven cron job opens with `gymModel.listAll()` before it can
- * discover that no gym has a bot, and that query alone wakes the Neon compute
+ * discover that no gym has a bot, and on an autosuspending provider that query
+ * alone wakes the compute
  * and resets its suspend timer. On a deployment where nobody uses Telegram,
  * checking here skips those jobs without touching Postgres at all.
  */

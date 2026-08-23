@@ -280,13 +280,14 @@ exports.api.put('/plans/:id', (0, validate_1.validate)(planSchema.partial()), (0
 exports.api.delete('/plans/:id', (0, async_1.asyncHandler)(plans.remove));
 // ---------- members ----------
 exports.api.get('/members', (0, async_1.asyncHandler)(members.list));
-exports.api.get('/members/descriptors', (0, async_1.asyncHandler)(members.allDescriptors));
+exports.api.get('/members/descriptors', (0, auth_1.requireFeature)('camera'), (0, async_1.asyncHandler)(members.allDescriptors));
+exports.api.get('/members/descriptors/version', (0, auth_1.requireFeature)('camera'), (0, async_1.asyncHandler)(members.descriptorsVersion));
 exports.api.get('/members/export', (0, async_1.asyncHandler)(members.exportData)); // before /members/:id
 exports.api.post('/members', (0, validate_1.validate)(enrollSchema), (0, async_1.asyncHandler)(members.enroll));
 exports.api.post('/members/previous', (0, validate_1.validate)(previousMemberSchema), (0, async_1.asyncHandler)(members.enrollPrevious));
 exports.api.get('/members/:id', (0, async_1.asyncHandler)(members.detail));
 exports.api.put('/members/:id', (0, validate_1.validate)(memberUpdateSchema), (0, async_1.asyncHandler)(members.update));
-exports.api.post('/members/:id/descriptors', (0, validate_1.validate)(zod_1.z.object({ descriptors: zod_1.z.array(descriptor).min(1).max(5), replace: zod_1.z.boolean().optional() })), (0, async_1.asyncHandler)(members.addDescriptors));
+exports.api.post('/members/:id/descriptors', (0, auth_1.requireFeature)('camera'), (0, validate_1.validate)(zod_1.z.object({ descriptors: zod_1.z.array(descriptor).min(1).max(5), replace: zod_1.z.boolean().optional() })), (0, async_1.asyncHandler)(members.addDescriptors));
 exports.api.post('/members/:id/renew', (0, validate_1.validate)(renewSchema), (0, async_1.asyncHandler)(members.renew));
 // Removing someone is owner-only, like every other destructive action here.
 // Archive keeps the payment history; DELETE is refused for anyone who has any.
@@ -296,7 +297,7 @@ exports.api.delete('/members/:id', auth_1.requireOwner, (0, async_1.asyncHandler
 exports.api.post('/members/:id/freeze', (0, async_1.asyncHandler)(members.freeze));
 exports.api.post('/members/:id/unfreeze', (0, async_1.asyncHandler)(members.unfreeze));
 // ---------- check-ins / monitor ----------
-exports.api.post('/check-ins/recognize', (0, validate_1.validate)(recognizeSchema), (0, async_1.asyncHandler)(checkIns.recognize));
+exports.api.post('/check-ins/recognize', (0, auth_1.requireFeature)('camera'), (0, validate_1.validate)(recognizeSchema), (0, async_1.asyncHandler)(checkIns.recognize));
 exports.api.post('/check-ins/override', (0, validate_1.validate)(zod_1.z.object({ member_id: zod_1.z.number().int().positive() })), (0, async_1.asyncHandler)(checkIns.override));
 exports.api.post('/check-ins/approve', (0, validate_1.validate)(zod_1.z.object({ member_id: zod_1.z.number().int().positive() })), (0, async_1.asyncHandler)(checkIns.approve));
 exports.api.get('/check-ins/open', (0, async_1.asyncHandler)(checkIns.listOpen));
@@ -305,7 +306,7 @@ exports.api.get('/occupancy', (0, async_1.asyncHandler)(checkIns.occupancy));
 exports.api.get('/events', (0, async_1.asyncHandler)(checkIns.recentEvents));
 // ---------- guests (Phase 3) ----------
 exports.api.get('/guests', (0, async_1.asyncHandler)(guests.list));
-exports.api.get('/guests/descriptors', (0, async_1.asyncHandler)(guests.descriptors));
+exports.api.get('/guests/descriptors', (0, auth_1.requireFeature)('camera'), (0, async_1.asyncHandler)(guests.descriptors));
 exports.api.post('/guests', (0, validate_1.validate)(guestSchema), (0, async_1.asyncHandler)(guests.create));
 exports.api.post('/guests/:id/expire', (0, async_1.asyncHandler)(guests.expire));
 exports.api.post('/guests/:id/convert', (0, validate_1.validate)(zod_1.z.object({ member_id: zod_1.z.number().int().positive() })), (0, async_1.asyncHandler)(guests.convert));
@@ -317,8 +318,8 @@ exports.api.get('/audit-logs', auth_1.requireOwner, (0, async_1.asyncHandler)(as
     }));
 }));
 // ---------- telegram / notifications (Phase 2) ----------
-exports.api.post('/members/:id/telegram-link', (0, async_1.asyncHandler)(telegram.memberLink));
-exports.api.post('/telegram/owner-link', (0, async_1.asyncHandler)(telegram.ownerLink));
+exports.api.post('/members/:id/telegram-link', (0, auth_1.requireFeature)('telegram'), (0, async_1.asyncHandler)(telegram.memberLink));
+exports.api.post('/telegram/owner-link', (0, auth_1.requireFeature)('telegram'), (0, async_1.asyncHandler)(telegram.ownerLink));
 exports.api.get('/telegram/status', (0, async_1.asyncHandler)(telegram.status));
 exports.api.get('/notifications', (0, async_1.asyncHandler)(telegram.notifications));
 // ---------- payments / dashboard ----------

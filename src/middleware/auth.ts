@@ -150,7 +150,7 @@ export async function requireActiveSubscription(
   const settings = await billingModel.getSettings();
   if (!settings.payments_required) return next();
   // blockFrozenGym already loaded (and validated) this row earlier in the
-  // chain — reuse it rather than paying a second Neon round-trip per request.
+  // chain — reuse it rather than paying a second database round-trip per request.
   const gym = req.gym ?? (await gymModel.findById(req.auth.gymId));
   if (!gym) throw unauthorized('Gym no longer exists');
   if (billingService.hasAccess(gym, settings)) return next();

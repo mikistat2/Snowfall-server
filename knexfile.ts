@@ -2,7 +2,7 @@ import type { Knex } from 'knex';
 import { knexConfig } from './src/config/database';
 
 // CLI config (npm run migrate / seed) — shares SSL + pool logic with the app,
-// so pointing DATABASE_URL at Neon works for migrations and seeds too.
+// so pointing DATABASE_URL at Supabase works for migrations and seeds too.
 const config: Knex.Config = {
   ...knexConfig,
   migrations: {

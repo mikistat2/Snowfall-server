@@ -33,7 +33,7 @@ const PURGE_BATCH = 5_000;
  *
  * `listRecent` above is the ONLY read of this table, and it serves the newest
  * 50 rows per gym. Anything older is unreachable from the UI and exists purely
- * to consume Neon's 0.5 GB free-tier storage — this table is the single
+ * to consume the 0.5 GB of free-tier storage — this table is the single
  * biggest contributor to per-gym growth (~4.8 MB/gym/year).
  *
  * Deleted in batches, newest-cutoff first, so the statement stays short.

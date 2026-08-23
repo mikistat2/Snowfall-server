@@ -43,6 +43,7 @@ exports.listGyms = listGyms;
 exports.gymDetail = gymDetail;
 exports.freezeGym = freezeGym;
 exports.unfreezeGym = unfreezeGym;
+exports.setFeatures = setFeatures;
 exports.exportGymMembers = exportGymMembers;
 exports.exportAllMembers = exportAllMembers;
 exports.getSettings = getSettings;
@@ -65,6 +66,8 @@ const platformAdminModel = __importStar(require("../models/platformAdminModel"))
 const gymModel = __importStar(require("../models/gymModel"));
 const memberModel = __importStar(require("../models/memberModel"));
 const platformAlert = __importStar(require("../services/platformAlertService"));
+const auditLogModel = __importStar(require("../models/auditLogModel"));
+const botManager = __importStar(require("../telegram/botManager"));
 /**
  * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
  * most `ms`, then respond anyway — the alert keeps sending in the background.
@@ -154,6 +157,50 @@ async function unfreezeGym(req, res) {
     await platformModel.setStatus(id, 'active');
     const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'unfreeze'));
     res.json({ ok: true, notified });
+}
+/**
+ * Grant or revoke a gym's platform features (owner-only).
+ *
+ * Revoking is a lock, never a delete: enrolled face descriptors and the stored
+ * bot token both survive, so restoring the entitlement brings the gym back
+ * exactly as it was. Freeing that storage is a separate, deliberate act.
+ *
+ * Revoking Telegram stops the running bot in the same request rather than
+ * waiting for the next boot — otherwise a revoked gym keeps sending messages
+ * until the server restarts.
+ */
+async function setFeatures(req, res) {
+    const id = Number(req.params.id);
+    const gym = await gymModel.findById(id);
+    if (!gym)
+        throw (0, errors_1.notFound)('Gym not found');
+    const body = req.body;
+    const updated = await gymModel.setFeatures(id, body);
+    if (body.telegram_allowed === false && gym.telegram_allowed) {
+        await botManager.stopBot(id);
+    }
+    else if (body.telegram_allowed === true && !gym.telegram_allowed && updated.telegram_bot_token) {
+        await botManager.restartBot(id, updated.telegram_bot_token);
+    }
+    // Revoking the camera can strand staff on the monitor page with a live token
+    // and a now-403 recognition loop; the audit trail is what explains it.
+    await auditLogModel.log({
+        gym_id: id,
+        user_id: null,
+        action: 'platform.features_updated',
+        entity: 'gym',
+        entity_id: id,
+        meta: {
+            camera_allowed: updated.camera_allowed,
+            telegram_allowed: updated.telegram_allowed,
+            by: req.platform?.isOwner ? 'platform_owner' : 'platform_admin',
+        },
+    });
+    res.json({
+        ok: true,
+        camera_allowed: updated.camera_allowed,
+        telegram_allowed: updated.telegram_allowed,
+    });
 }
 /** Full member dump of ONE gym — the client renders it as that gym's members PDF. */
 async function exportGymMembers(req, res) {

@@ -88,6 +88,13 @@ exports.adminRouter.get('/settings', auth_1.requirePlatformOwner, (0, async_1.as
 exports.adminRouter.put('/settings', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z
     .object({ trial_mode: zod_1.z.boolean(), trial_days: zod_1.z.number().int().min(1).max(365) })
     .partial()), (0, async_1.asyncHandler)(admin.updateSettings));
+// Feature entitlements. Owner-only, matching the other structural switches
+// (platform settings, comped status, gym deletion) rather than the
+// day-to-day permissions granted to sub-admins.
+exports.adminRouter.put('/gyms/:id/features', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z
+    .object({ camera_allowed: zod_1.z.boolean(), telegram_allowed: zod_1.z.boolean() })
+    .partial()
+    .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' })), (0, async_1.asyncHandler)(admin.setFeatures));
 exports.adminRouter.delete('/gyms/:id', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z.object({ confirm_name: zod_1.z.string(), note: zod_1.z.string().max(1000).optional() })), (0, async_1.asyncHandler)(admin.deleteGym));
 // ---------------------------------------------------------------- billing --
 // Subscription billing: the master switch, our prices and payment accounts,

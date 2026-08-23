@@ -23,7 +23,7 @@ export function createApp(): express.Express {
   app.use(express.json({ limit: '10mb' })); // face descriptors + photo data URLs
 
   // Cheap liveness probe for UptimeRobot — deliberately does NOT touch the
-  // database, so a Neon wake-up can never make the monitor report the service
+  // database, so a database wake-up can never make the monitor report the service
   // as down. Warming the database is the keep-alive job's business, and this
   // route is excluded from activity tracking below so that a monitor ping is
   // never mistaken for a person using the app.

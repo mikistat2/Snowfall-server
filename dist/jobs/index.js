@@ -41,12 +41,16 @@ exports.autoCheckout = autoCheckout;
 const node_cron_1 = __importDefault(require("node-cron"));
 const activity_1 = require("../utils/activity");
 const knex_1 = require("../db/knex");
+const database_1 = require("../config/database");
 const statusService_1 = require("../services/statusService");
 const checkInModel = __importStar(require("../models/checkInModel"));
 const gymModel = __importStar(require("../models/gymModel"));
 const occupancyService = __importStar(require("../services/occupancyService"));
 const notificationService = __importStar(require("../services/notificationService"));
 const guestModel = __importStar(require("../models/guestModel"));
+const eventModel = __importStar(require("../models/eventModel"));
+const auditLogModel = __importStar(require("../models/auditLogModel"));
+const botManager = __importStar(require("../telegram/botManager"));
 const platformAlert = __importStar(require("../services/platformAlertService"));
 /**
  * Jobs:
@@ -67,8 +71,20 @@ const platformAlert = __importStar(require("../services/platformAlertService"));
 const SWEEP_SAFETY_MS = 6 * 60 * 60 * 1000;
 const checkoutSweep = (0, activity_1.createSweepGate)(SWEEP_SAFETY_MS);
 const summarySweep = (0, activity_1.createSweepGate)(SWEEP_SAFETY_MS);
+/**
+ * Retention windows for the two append-only log tables, which together are
+ * more than half of each gym's storage growth against the 0.5 GB free-tier
+ * limit (Neon's was 0.5 GB; Supabase's is 500 MB — the same problem).
+ *
+ * Both windows sit far beyond what the UI can reach: the event feed serves the
+ * newest 50 rows per gym and the audit page the newest 200, neither paginated.
+ * Nothing displayable is deleted — this only stops the tables growing forever.
+ */
+const EVENT_RETENTION_DAYS = 90;
+const AUDIT_RETENTION_DAYS = 365;
 function startJobs() {
-    startDbKeepAlive();
+    if (database_1.dbAutosuspends)
+        startDbKeepAlive();
     node_cron_1.default.schedule('5 0 * * *', async () => {
         try {
             await (0, statusService_1.recomputeAllGyms)();
@@ -79,6 +95,18 @@ function startJobs() {
         catch (err) {
             // eslint-disable-next-line no-console
             console.error('[jobs] status recompute failed', err);
+        }
+        // Storage retention. Runs after the recompute, inside the same nightly
+        // wake-up, so pruning never costs a compute start of its own.
+        try {
+            const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
+            const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
+            // eslint-disable-next-line no-console
+            console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs`);
+        }
+        catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[jobs] retention prune failed', err);
         }
     });
     node_cron_1.default.schedule('*/15 * * * *', async () => {
@@ -94,6 +122,12 @@ function startJobs() {
         }
     });
     node_cron_1.default.schedule('0 9 * * *', async () => {
+        // Both passes deliver over Telegram and already skip any gym without a
+        // running bot — but only after `gymModel.listAll()` has woken Postgres to
+        // tell them which gyms those are. When no gym has a bot at all, that wake
+        // is pure cost, so the in-memory check comes first.
+        if (!botManager.hasAnyBot())
+            return;
         try {
             await notificationService.runExpiryReminders();
             await notificationService.runAbsenceNudges();
@@ -106,6 +140,12 @@ function startJobs() {
         }
     });
     node_cron_1.default.schedule('*/10 * * * *', async () => {
+        // The summary is a Telegram message to owners; with no bot running there
+        // is nobody to send it to, and the sweep's opening `listAll()` would wake
+        // the compute every 10 minutes to establish that. Checked before the
+        // sweep gate so it costs nothing.
+        if (!botManager.hasAnyBot())
+            return;
         if (!summarySweep.shouldRun())
             return;
         const token = summarySweep.start();
@@ -138,12 +178,16 @@ function startJobs() {
     });
 }
 /**
- * Keeps the Neon compute from suspending while the app is in use.
+ * Keeps an autosuspending compute awake while the app is in use.
+ *
+ * Only started when `dbAutosuspends` says the provider has a compute to keep
+ * awake (Neon). On Supabase the instance is already running and this is dead
+ * weight, so `startJobs` skips it.
  *
  * UptimeRobot's ping hits /health, which answers without touching Postgres —
  * so it keeps Render awake while the database still went cold after a few idle
  * minutes, and the first staff member to load a page paid the wake-up. This
- * runs a real (trivial) query on a cadence below Neon's autosuspend delay.
+ * runs a real (trivial) query on a cadence below the autosuspend delay.
  *
  * It only fires while someone is actually using the API. A gym that closed an
  * hour ago stops being warmed, the compute suspends, and the monthly

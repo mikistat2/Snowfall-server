@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { KEEPALIVE_INTERVAL_MINUTES, createSweepGate, isRecentlyActive } from '../utils/activity';
 import { db } from '../db/knex';
+import { dbAutosuspends } from '../config/database';
 import { recomputeAllGyms } from '../services/statusService';
 import * as checkInModel from '../models/checkInModel';
 import * as gymModel from '../models/gymModel';
@@ -36,7 +37,8 @@ const summarySweep = createSweepGate(SWEEP_SAFETY_MS);
 
 /**
  * Retention windows for the two append-only log tables, which together are
- * more than half of each gym's storage growth on Neon's 0.5 GB free tier.
+ * more than half of each gym's storage growth against the 0.5 GB free-tier
+ * limit (Neon's was 0.5 GB; Supabase's is 500 MB — the same problem).
  *
  * Both windows sit far beyond what the UI can reach: the event feed serves the
  * newest 50 rows per gym and the audit page the newest 200, neither paginated.
@@ -46,7 +48,7 @@ const EVENT_RETENTION_DAYS = 90;
 const AUDIT_RETENTION_DAYS = 365;
 
 export function startJobs(): void {
-  startDbKeepAlive();
+  if (dbAutosuspends) startDbKeepAlive();
 
   cron.schedule('5 0 * * *', async () => {
     try {
@@ -137,12 +139,16 @@ export function startJobs(): void {
 
 
 /**
- * Keeps the Neon compute from suspending while the app is in use.
+ * Keeps an autosuspending compute awake while the app is in use.
+ *
+ * Only started when `dbAutosuspends` says the provider has a compute to keep
+ * awake (Neon). On Supabase the instance is already running and this is dead
+ * weight, so `startJobs` skips it.
  *
  * UptimeRobot's ping hits /health, which answers without touching Postgres —
  * so it keeps Render awake while the database still went cold after a few idle
  * minutes, and the first staff member to load a page paid the wake-up. This
- * runs a real (trivial) query on a cadence below Neon's autosuspend delay.
+ * runs a real (trivial) query on a cadence below the autosuspend delay.
  *
  * It only fires while someone is actually using the API. A gym that closed an
  * hour ago stops being warmed, the compute suspends, and the monthly

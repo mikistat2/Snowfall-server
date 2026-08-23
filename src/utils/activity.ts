@@ -1,7 +1,8 @@
 /**
- * Tracks when the API last served a real request, so the Neon keep-alive job
- * (jobs/index.ts) can warm the database while staff are using it and let it
- * suspend when they are not.
+ * Tracks when the API last served a real request, so the keep-alive job
+ * (jobs/index.ts) can warm an autosuspending database while staff are using it
+ * and let it suspend when they are not, and so the sweep gates below can skip
+ * passes that provably have no work.
  *
  * Why not a fixed opening-hours window: the server clock is whatever the host
  * runs (Render is UTC, the gyms are UTC+3), so a hardcoded window silently
@@ -9,7 +10,7 @@
  * window regardless. Real traffic needs no timezone and no configuration.
  */
 
-/** Ping cadence. Must stay below Neon's autosuspend delay (5 min default). */
+/** Ping cadence. Must stay below the provider's autosuspend delay (Neon: 5 min). */
 export const KEEPALIVE_INTERVAL_MINUTES = 4;
 
 /**
@@ -37,11 +38,14 @@ export function isRecentlyActive(): boolean {
 /**
  * Gate for the periodic sweeps (auto-checkout, closing summaries).
  *
- * Neon bills compute *uptime*, not queries, and suspends after a few idle
- * minutes. A cron that opens with an unconditional `gymModel.listAll()` every
- * 10 minutes therefore resets the suspend timer forever and holds the compute
- * up around the clock — the overwhelming majority of it at night, to discover
- * there is nothing to do.
+ * On a provider that bills compute *uptime* rather than queries and suspends
+ * when idle (Neon), a cron that opens with an unconditional `gymModel.listAll()`
+ * every 10 minutes resets the suspend timer forever and holds the compute up
+ * around the clock — the overwhelming majority of it at night, to discover
+ * there is nothing to do. That was the original motive.
+ *
+ * It still earns its keep on an always-on provider: the same pass is a query
+ * per gym every ten minutes, all night, for nothing.
  *
  * A sweep only has work when something happened, and the only things that can
  * happen are an API request (a check-in, a settings change) or time crossing a

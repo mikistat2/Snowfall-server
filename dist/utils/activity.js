@@ -1,8 +1,9 @@
 "use strict";
 /**
- * Tracks when the API last served a real request, so the Neon keep-alive job
- * (jobs/index.ts) can warm the database while staff are using it and let it
- * suspend when they are not.
+ * Tracks when the API last served a real request, so the keep-alive job
+ * (jobs/index.ts) can warm an autosuspending database while staff are using it
+ * and let it suspend when they are not, and so the sweep gates below can skip
+ * passes that provably have no work.
  *
  * Why not a fixed opening-hours window: the server clock is whatever the host
  * runs (Render is UTC, the gyms are UTC+3), so a hardcoded window silently
@@ -14,7 +15,7 @@ exports.KEEPALIVE_INTERVAL_MINUTES = void 0;
 exports.markActivity = markActivity;
 exports.isRecentlyActive = isRecentlyActive;
 exports.createSweepGate = createSweepGate;
-/** Ping cadence. Must stay below Neon's autosuspend delay (5 min default). */
+/** Ping cadence. Must stay below the provider's autosuspend delay (Neon: 5 min). */
 exports.KEEPALIVE_INTERVAL_MINUTES = 4;
 /**
  * How long after the last request we keep the database warm. Long enough to

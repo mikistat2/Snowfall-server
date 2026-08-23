@@ -40,6 +40,7 @@ exports.enroll = enroll;
 exports.enrollPrevious = enrollPrevious;
 exports.update = update;
 exports.allDescriptors = allDescriptors;
+exports.descriptorsVersion = descriptorsVersion;
 exports.addDescriptors = addDescriptors;
 exports.renew = renew;
 exports.archive = archive;
@@ -68,12 +69,23 @@ async function exportData(req, res) {
 async function detail(req, res) {
     res.json(await memberService.detail(req.auth.gymId, Number(req.params.id)));
 }
+/**
+ * Enrolment stays open with the camera revoked — a gym in name-board mode
+ * still signs members up — but face captures sent alongside are dropped
+ * rather than stored. The route is therefore not behind requireFeature; this
+ * is the narrower rule it needs.
+ */
+function allowedDescriptors(req) {
+    if (!req.gym?.camera_allowed)
+        return [];
+    return req.body.descriptors ?? [];
+}
 async function enroll(req, res) {
     const member = await memberService.enroll({
         gymId: req.auth.gymId,
         userId: req.auth.sub,
         member: req.body.member,
-        descriptors: req.body.descriptors ?? [],
+        descriptors: allowedDescriptors(req),
         planId: req.body.plan_id,
         payment: req.body.payment,
     });
@@ -85,7 +97,7 @@ async function enrollPrevious(req, res) {
         gymId: req.auth.gymId,
         userId: req.auth.sub,
         member: req.body.member,
-        descriptors: req.body.descriptors ?? [],
+        descriptors: allowedDescriptors(req),
         planId: req.body.plan_id,
         calendar: req.body.calendar,
         enteredCalendar: req.body.entered_calendar,
@@ -134,6 +146,13 @@ async function update(req, res) {
 /** All descriptors for the gym — the monitor page's recognition cache. */
 async function allDescriptors(req, res) {
     res.json(await memberModel.listDescriptorsByGym(req.auth.gymId));
+}
+/**
+ * Change-token for the above. The monitor polls this every 60s (~50 bytes)
+ * and only re-downloads the megabyte-scale descriptor payload when it moves.
+ */
+async function descriptorsVersion(req, res) {
+    res.json({ version: await memberModel.descriptorsVersion(req.auth.gymId) });
 }
 async function addDescriptors(req, res) {
     const memberId = Number(req.params.id);

@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getBot = getBot;
+exports.hasAnyBot = hasAnyBot;
 exports.getStatus = getStatus;
 exports.startBotForGym = startBotForGym;
 exports.stopBot = stopBot;
@@ -54,6 +55,19 @@ const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 60_000;
 function getBot(gymId) {
     return bots.get(gymId);
+}
+/**
+ * True when at least one gym has a running bot.
+ *
+ * Read from memory, never the database — which is the point. Every
+ * Telegram-driven cron job opens with `gymModel.listAll()` before it can
+ * discover that no gym has a bot, and on an autosuspending provider that query
+ * alone wakes the compute
+ * and resets its suspend timer. On a deployment where nobody uses Telegram,
+ * checking here skips those jobs without touching Postgres at all.
+ */
+function hasAnyBot() {
+    return bots.size > 0;
 }
 function getStatus(gymId) {
     const entry = bots.get(gymId);
@@ -181,13 +195,19 @@ async function restartBot(gymId, token) {
         return;
     }
     const gym = await gymModel.findById(gymId);
+    // A stored token is not permission to run. Checked here as well as at the
+    // settings route because a token can predate the revocation.
+    if (gym && !gym.telegram_allowed) {
+        await stopBot(gymId);
+        return;
+    }
     await startBotForGym(gymId, token, gym?.name ?? 'your gym');
 }
-/** Boot: start bots for every gym that has a token configured. */
+/** Boot: start bots for every gym that has a token configured *and allowed*. */
 async function initBots() {
     const gyms = await gymModel.listAll();
     for (const gym of gyms) {
-        if (gym.telegram_bot_token) {
+        if (gym.telegram_bot_token && gym.telegram_allowed) {
             await startBotForGym(gym.id, gym.telegram_bot_token, gym.name);
         }
     }
