@@ -45,10 +45,54 @@ export function isConfigured(): boolean {
 
 // ------------------------------------------------------------ HTTP layer ---
 
+/**
+ * Veritas exposes one dedicated route per provider alongside a universal
+ * `/verify` that sniffs the provider from the reference shape. We always know
+ * which provider issued the receipt — the QR payload says so — and the
+ * dedicated routes take the provider-specific parameters, so guessing is not
+ * something we need the API to do for us.
+ *
+ * Note the universal route calls the CBE account suffix `suffix`, whereas the
+ * dedicated `/verify-cbe` route calls it `accountSuffix` — which is the name
+ * the request body below already uses. Switching to `/verify` would mean
+ * renaming that field.
+ */
 const PROVIDER_PATH: Record<Exclude<BillingProvider, 'CASH'>, string> = {
-  CBE: '/api/v1/verify/cbe',
-  TELEBIRR: '/api/v1/verify/telebirr',
+  CBE: '/verify-cbe',
+  TELEBIRR: '/verify-telebirr',
 };
+
+/**
+ * What a payer is told when the failure is ours, not theirs. It must not ask
+ * them to re-check a reference that was already correct, and it must say the
+ * money is safe — the commonest reaction to a failed verification is to pay a
+ * second time.
+ */
+const MISCONFIGURED =
+  'Receipt verification is not set up correctly on the server, so this receipt could not be checked. ' +
+  'Your payment has not been lost — please contact support.';
+
+/**
+ * Transport failures that will never come good on a retry, because they mean
+ * the address is wrong rather than the network being briefly unhappy.
+ * `EAI_AGAIN` is deliberately absent: it is DNS saying "ask again later".
+ */
+const UNREACHABLE = new Set([
+  'ENOTFOUND',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
+
+/** undici buries the OS-level code one level down, in `cause`. */
+function errorCode(err: unknown): string {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.cause?.code ?? e?.code ?? (err as Error)?.name ?? 'UNKNOWN';
+}
 
 export interface LookupInput {
   provider: Exclude<BillingProvider, 'CASH'>;
@@ -91,28 +135,60 @@ export async function lookup(input: LookupInput): Promise<VerificationEnvelope> 
     try {
       res = await fetch(url, {
         method: 'POST',
+        // x-api-key ONLY. The provider documents that `Authorization: Bearer`
+        // is not supported, and sending it as well is the kind of thing a
+        // gateway rejects outright.
         headers: {
           'content-type': 'application/json',
           accept: 'application/json',
-          authorization: `Bearer ${env.verification.apiKey}`,
           'x-api-key': env.verification.apiKey,
         },
         body,
         signal: AbortSignal.timeout(env.verification.timeoutMs),
       });
     } catch (err) {
-      lastError = 'Could not reach the verification service. Check your connection and try again.';
       lastStatus = 0;
-      console.warn(`[verify] transport error (attempt ${attempt + 1}):`, (err as Error).message);
-      continue; // transport trouble — worth another go
+      const code = errorCode(err);
+
+      // A host that does not resolve, refuses the connection, or serves a
+      // certificate for someone else is OUR configuration being wrong. No
+      // number of retries fixes it, and "check your connection" sends a gym
+      // owner off to debug their wifi over a hostname we got wrong.
+      if (UNREACHABLE.has(code)) {
+        console.error(
+          `[verify] cannot reach ${url} (${code}). VERIFY_API_URL is wrong or the host is down.`,
+        );
+        return { ok: false, receipt: null, error: MISCONFIGURED, status: 0, raw: null };
+      }
+
+      lastError =
+        (err as Error).name === 'TimeoutError'
+          ? 'The verification service took too long to respond. Try again in a moment.'
+          : 'Could not reach the verification service. Try again in a moment.';
+      console.warn(`[verify] transport error on ${url} (attempt ${attempt + 1}) [${code}]:`, (err as Error).message);
+      continue; // genuinely transient — worth another go
     }
 
     lastStatus = res.status;
-    const raw = await safeJson(res);
+    const { json: raw, text, isJson } = await readBody(res);
 
     if (res.status >= 500 || res.status === 429) {
       lastError = messageFor(res.status, raw);
       continue;
+    }
+
+    // A 4xx whose body is not JSON is not the bank talking — it is a web
+    // server or a proxy, which means the URL we called is wrong, not the
+    // receipt. Reporting that through messageFor() turns a 404 on a mistyped
+    // path into "no transaction was found with that reference", which blames
+    // the payer for our own misconfiguration and sends them off to re-check a
+    // reference that was correct all along.
+    if (!res.ok && !isJson) {
+      console.error(
+        `[verify] non-JSON ${res.status} from ${url} ` +
+          `(content-type: ${res.headers.get('content-type') ?? 'none'}): ${(text ?? '').slice(0, 200)}`,
+      );
+      return { ok: false, receipt: null, error: MISCONFIGURED, status: res.status, raw: null };
     }
 
     // A 2xx is never proof on its own: some adapters return success:false with
@@ -146,12 +222,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function safeJson(res: Response): Promise<unknown> {
-  try {
-    return await res.json();
-  } catch {
-    return null;
+/**
+ * Read the body once, and report whether it was actually JSON.
+ *
+ * `isJson` is the part that matters: it separates "the bank answered and said
+ * no" from "something that is not the bank answered at all". `res.json()`
+ * alone collapses both into null and loses that distinction.
+ *
+ * The content-type header is a hint, not the rule — some gateways serve JSON
+ * as text/plain — so a body that starts with `{` or `[` is parsed regardless.
+ */
+async function readBody(res: Response): Promise<{ json: unknown; text: string | null; isJson: boolean }> {
+  const text = await res.text().catch(() => '');
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('json') || /^\s*[[{]/.test(text)) {
+    try {
+      return { json: JSON.parse(text), text, isJson: true };
+    } catch {
+      // Claimed JSON, wasn't. Fall through and treat it as an opaque body.
+    }
   }
+  return { json: null, text, isJson: false };
 }
 
 /** Explicit failure declared inside a 2xx body. */

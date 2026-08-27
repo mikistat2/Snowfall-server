@@ -61,6 +61,16 @@ adminRouter.post(
   ),
   asyncHandler(admin.renewGym),
 );
+// The undo for the route above. Shares the `renew` permission because it is
+// the same authority — moving a gym's subscription end date around.
+adminRouter.post(
+  '/gyms/:id/trial',
+  requirePlatformPerm('renew'),
+  // Capped at a year: anything longer is a subscription, and should be granted
+  // as one so the billing side reports it honestly.
+  validate(z.object({ days: z.number().int().min(1).max(365).default(30) }).default({})),
+  asyncHandler(admin.setTrial),
+);
 adminRouter.post(
   '/gyms/:id/freeze',
   requirePlatformPerm('freeze'),

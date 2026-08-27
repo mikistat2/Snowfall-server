@@ -1,0 +1,23 @@
+# Secrets — never commit. Real values belong in Render's dashboard; .env.example
+# documents the variable names.
+.env
+.env.*
+!.env.example
+
+# dependencies / build output
+node_modules/
+dist/
+
+# logs
+*.log
+npm-debug.log*
+
+# uploads (member photos live outside git)
+uploads/photos/*
+!uploads/photos/.gitkeep
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -68,7 +68,9 @@ export const env = {
    * The timeout is deliberately long: these calls hit a bank upstream.
    */
   verification: {
-    baseUrl: optional('VERIFY_API_URL', 'https://api.veritas.et').replace(/\/+$/, ''),
+    // The live Veritas host. Their docs quote `api.veritas.et` in one curl
+    // example, but that name does not resolve — this is the one that answers.
+    baseUrl: optional('VERIFY_API_URL', 'https://verifyapi.leulzenebe.pro').replace(/\/+$/, ''),
     apiKey: optional('VERIFY_API_KEY', ''),
     timeoutMs: Number(optional('VERIFY_TIMEOUT_MS', '30000')),
     retries: Number(optional('VERIFY_RETRIES', '2')),

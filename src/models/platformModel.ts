@@ -195,6 +195,38 @@ export async function renewGym(
   return rows[0].subscription_ends_at;
 }
 
+/**
+ * Put a gym (back) onto a free trial of `days`.
+ *
+ * The inverse of renewGym, and the reason it exists: renewGym sets
+ * `is_trial = FALSE` and pushes the end date out, so an accidental "Extend
+ * free" was previously unfixable from the panel — the only route back was
+ * hand-written SQL against production.
+ *
+ * `comped` is cleared deliberately. A comped gym passes hasAccess() forever,
+ * so leaving it set would produce a "trial" with an end date that never
+ * actually arrives — the most misleading possible state to leave behind.
+ *
+ * The end date is set FROM NOW rather than extended: this is a correction,
+ * and adding 30 days to a year that was granted by mistake would preserve
+ * exactly the mistake being corrected.
+ */
+export async function setTrial(gymId: number, days: number): Promise<Date> {
+  const { rows } = await db.raw(
+    `
+    UPDATE gyms
+      SET subscription_ends_at = now() + (? * interval '1 day'),
+          is_trial = TRUE,
+          comped = FALSE,
+          approved_at = COALESCE(approved_at, now())
+      WHERE id = ?
+      RETURNING subscription_ends_at
+  `,
+    [days, gymId],
+  );
+  return rows[0].subscription_ends_at;
+}
+
 /** Revoke every refresh token of a gym's staff — used when freezing. */
 export async function revokeGymSessions(gymId: number): Promise<void> {
   await db('refresh_tokens')

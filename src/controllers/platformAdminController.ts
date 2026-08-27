@@ -262,6 +262,46 @@ export async function renewGym(req: Request, res: Response): Promise<void> {
   res.json({ ok: true, subscription_ends_at: ends, notified });
 }
 
+/**
+ * Move a gym onto a free trial — the undo for an accidental renewal, and the
+ * way to start a gym on a trial that registered before trial mode was on.
+ *
+ * Deliberately NOT alerted to the owner. Every other platform action here
+ * tells them something they gain; this one usually SHORTENS their end date
+ * while correcting an internal mistake, and "your subscription now ends in 30
+ * days instead of a year" is an alarming message to send about a clerical
+ * fix. It is audited instead, so the change is still traceable.
+ */
+export async function setTrial(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const gym = await gymModel.findById(id);
+  if (!gym) throw notFound('Gym not found');
+  if (gym.status === 'pending') throw forbidden('Approve the registration first');
+
+  const { days } = req.body as { days: number };
+  const endsAt = await platformModel.setTrial(id, days);
+
+  await auditLogModel.log({
+    gym_id: id,
+    user_id: null,
+    action: 'platform.trial_set',
+    entity: 'gym',
+    entity_id: id,
+    meta: {
+      days,
+      ends_at: new Date(endsAt).toISOString(),
+      // What it replaced — without this the log cannot answer "how much time
+      // did this take away", which is the only question worth asking of it.
+      previous_ends_at: gym.subscription_ends_at,
+      previous_is_trial: gym.is_trial,
+      previous_comped: gym.comped,
+      by: req.platform?.isOwner ? 'platform_owner' : 'platform_admin',
+    },
+  });
+
+  res.json({ ok: true, subscription_ends_at: endsAt, is_trial: true, comped: false });
+}
+
 export async function updateNote(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const gym = await gymModel.findById(id);
