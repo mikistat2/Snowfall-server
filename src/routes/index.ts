@@ -16,6 +16,7 @@ import * as settings from '../controllers/settingsController';
 import * as telegram from '../controllers/telegramController';
 import * as guests from '../controllers/guestController';
 import * as billing from '../controllers/billingController';
+import * as features from '../controllers/featureController';
 import * as auditLogModel from '../models/auditLogModel';
 import * as platformModel from '../models/platformModel';
 import { cameraProxy } from '../controllers/cameraProxyController';
@@ -275,6 +276,15 @@ api.post(
   receiptUpload.single('file'),
   asyncHandler(billing.verifyScreenshot),
 );
+
+// ---------- platform feature notices (also NOT behind the paywall) ----------
+// Two reasons this sits above the paywall: an unpaid gym is parked on
+// /billing, where a "your camera was switched off" alert is still the truth it
+// needs; and a 402 on this poll would be pure console noise on a page whose
+// whole job is to clear the 402.
+api.get('/features', asyncHandler(features.state));
+api.post('/features/notices/:id/ack', asyncHandler(features.acknowledge));
+api.post('/features/notices/ack-all', asyncHandler(features.acknowledgeAll));
 
 api.use(asyncHandler(requireActiveSubscription));
 

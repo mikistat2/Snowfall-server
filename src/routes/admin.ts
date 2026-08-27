@@ -90,10 +90,19 @@ adminRouter.put(
   '/gyms/:id/features',
   requirePlatformOwner,
   validate(
+    // `note` reaches the gym owner verbatim — in the app, in Telegram and by
+    // email — so it is the difference between a feature vanishing and a
+    // feature being explained. Optional, but the panel always asks for one.
     z
-      .object({ camera_allowed: z.boolean(), telegram_allowed: z.boolean() })
+      .object({
+        camera_allowed: z.boolean(),
+        telegram_allowed: z.boolean(),
+        note: z.string().max(1000),
+      })
       .partial()
-      .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' }),
+      .refine((v) => v.camera_allowed !== undefined || v.telegram_allowed !== undefined, {
+        message: 'Nothing to update',
+      }),
   ),
   asyncHandler(admin.setFeatures),
 );

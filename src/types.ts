@@ -66,6 +66,26 @@ export interface GymFeatures {
   telegram_allowed: boolean;
 }
 
+/** The two entitlements, named the way the notice table and the client refer to them. */
+export type FeatureKey = 'camera' | 'telegram';
+
+/**
+ * One platform decision about one feature, captured at the moment it was
+ * taken. See the 20260826000009 migration.
+ */
+export interface FeatureNoticeRow {
+  id: number;
+  gym_id: number;
+  feature: FeatureKey;
+  /** The state the feature moved TO. */
+  allowed: boolean;
+  note: string | null;
+  changed_by: string | null;
+  acknowledged_at: string | null;
+  acknowledged_by: number | null;
+  created_at: string;
+}
+
 /** Single-row global platform configuration (see platform_settings table). */
 export interface PlatformSettings {
   trial_mode: boolean;

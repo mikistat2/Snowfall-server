@@ -7,11 +7,12 @@ import { conflict, forbidden, notFound, unauthorized, AppError } from '../utils/
 import * as platformModel from '../models/platformModel';
 import * as platformAdminModel from '../models/platformAdminModel';
 import * as gymModel from '../models/gymModel';
+import * as featureNoticeModel from '../models/featureNoticeModel';
 import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
 import * as auditLogModel from '../models/auditLogModel';
 import * as botManager from '../telegram/botManager';
-import type { BillingCycle, GymFeatures } from '../types';
+import type { BillingCycle, FeatureKey, GymFeatures } from '../types';
 
 /**
  * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
@@ -125,13 +126,54 @@ export async function setFeatures(req: Request, res: Response): Promise<void> {
   const gym = await gymModel.findById(id);
   if (!gym) throw notFound('Gym not found');
 
-  const body = req.body as Partial<GymFeatures>;
+  const { note, ...body } = req.body as Partial<GymFeatures> & { note?: string };
+  const changedBy = req.platform?.isOwner ? 'Platform Owner' : (req.platform?.name ?? 'Platform admin');
+
+  // Only the entitlements that actually MOVED produce a notice. Re-sending the
+  // current value (a double-click, a stale panel) must not raise a fresh alert
+  // for a change that did not happen.
+  const changes: { feature: FeatureKey; allowed: boolean }[] = [];
+  if (body.camera_allowed !== undefined && body.camera_allowed !== gym.camera_allowed) {
+    changes.push({ feature: 'camera', allowed: body.camera_allowed });
+  }
+  if (body.telegram_allowed !== undefined && body.telegram_allowed !== gym.telegram_allowed) {
+    changes.push({ feature: 'telegram', allowed: body.telegram_allowed });
+  }
+
   const updated = await gymModel.setFeatures(id, body);
+
+  // The in-app notice is the channel that cannot fail: it is a row, not a
+  // delivery attempt, so the owner sees it on their next load even with no bot
+  // linked and no mail server configured.
+  for (const change of changes) {
+    await featureNoticeModel.create({
+      gym_id: id,
+      feature: change.feature,
+      allowed: change.allowed,
+      note,
+      changed_by: changedBy,
+    });
+  }
+
+  // The bot is bracketed around the alert, not sequenced after it, because the
+  // alert about Telegram wants to go out OVER Telegram:
+  //   granting  → start the bot first, so the good news has a bot to go out on;
+  //   revoking  → stop it afterwards, so the explanation is not swallowed by
+  //               the very shutdown it is explaining.
+  if (body.telegram_allowed === true && !gym.telegram_allowed && updated.telegram_bot_token) {
+    await botManager.restartBot(id, updated.telegram_bot_token);
+  }
+
+  // A revocation waits longer for the send to land before killing the bot;
+  // nothing is racing the other cases, so they respond on the usual timebox.
+  const revokingTelegram = changes.some((c) => c.feature === 'telegram' && !c.allowed);
+  const alerts = Promise.all(
+    changes.map((c) => platformAlert.notifyFeatureChange(id, gym.name, c.feature, c.allowed, note)),
+  );
+  const notified = (await timeboxed(alerts, revokingTelegram ? 8000 : 4000))?.at(-1);
 
   if (body.telegram_allowed === false && gym.telegram_allowed) {
     await botManager.stopBot(id);
-  } else if (body.telegram_allowed === true && !gym.telegram_allowed && updated.telegram_bot_token) {
-    await botManager.restartBot(id, updated.telegram_bot_token);
   }
 
   // Revoking the camera can strand staff on the monitor page with a live token
@@ -145,6 +187,8 @@ export async function setFeatures(req: Request, res: Response): Promise<void> {
     meta: {
       camera_allowed: updated.camera_allowed,
       telegram_allowed: updated.telegram_allowed,
+      changed: changes.map((c) => `${c.feature}:${c.allowed ? 'on' : 'off'}`),
+      note: note?.trim() || null,
       by: req.platform?.isOwner ? 'platform_owner' : 'platform_admin',
     },
   });
@@ -153,6 +197,8 @@ export async function setFeatures(req: Request, res: Response): Promise<void> {
     ok: true,
     camera_allowed: updated.camera_allowed,
     telegram_allowed: updated.telegram_allowed,
+    changed: changes.length,
+    notified,
   });
 }
 

@@ -70,7 +70,20 @@ export async function notifyGymOwners(
   note?: string,
 ): Promise<AlertResult> {
   const { subject, body } = MESSAGES[action];
-  const text = body(gymName, note?.trim() || undefined);
+  return deliver(gymId, subject, body(gymName, note?.trim() || undefined), { platform_action: action });
+}
+
+/**
+ * Both channels, best effort, never throwing — the platform action itself has
+ * already happened by the time this runs and must not be undone by a mail
+ * server being down.
+ */
+async function deliver(
+  gymId: number,
+  subject: string,
+  text: string,
+  meta: Record<string, unknown>,
+): Promise<AlertResult> {
   const result: AlertResult = { telegram: false, email: false };
 
   // Telegram (gym's own bot → linked owner chats; also logged in
@@ -80,7 +93,7 @@ export async function notifyGymOwners(
   try {
     const hasBot = Boolean(botManager.getBot(gymId));
     const chatIds = hasBot ? await userModel.ownerChatIds(gymId) : [];
-    await notifier.sendToOwners(gymId, 'admin_alert', text, { platform_action: action });
+    await notifier.sendToOwners(gymId, 'admin_alert', text, meta);
     result.telegram = hasBot && chatIds.length > 0;
   } catch (err) {
     console.warn(`[platform-alert] telegram alert failed for gym ${gymId}:`, err);
@@ -109,6 +122,51 @@ export async function notifyGymOwners(
   }
 
   return result;
+}
+
+/**
+ * A feature was granted or revoked for one gym.
+ *
+ * Kept out of `MESSAGES` because the wording has to name the feature and say
+ * what specifically stops working — "your account was changed" is exactly the
+ * kind of alert that gets ignored until someone phones support.
+ *
+ * For a Telegram *revocation* the caller must send this BEFORE stopping the
+ * bot, or the message has no bot left to go out through.
+ */
+export async function notifyFeatureChange(
+  gymId: number,
+  gymName: string,
+  feature: 'camera' | 'telegram',
+  allowed: boolean,
+  note?: string,
+): Promise<AlertResult> {
+  const label = feature === 'camera' ? 'Face recognition' : 'Telegram notifications';
+  const reason = note?.trim() ? `Reason: ${note.trim()}\n\n` : '';
+
+  const subject = `${label} ${allowed ? 'enabled' : 'turned off'} for your gym`;
+  const text = allowed
+    ? `✅ ${label} has been switched back on for "${gymName}" on Snowfall.\n\n` +
+      reason +
+      (feature === 'camera'
+        ? `Your enrolled faces were kept while it was off, so camera check-in works again straight away — ` +
+          `re-enable it under Settings → Camera if you had switched it off yourself.\n\n`
+        : `Your saved bot token was kept, so reminders and nudges start sending again automatically.\n\n`) +
+      `Nothing else about your account has changed.`
+    : `⚠️ ${label} has been turned off for "${gymName}" on Snowfall by the platform administrator.\n\n` +
+      reason +
+      (feature === 'camera'
+        ? `What this means: the door camera and automatic face check-in stop working, and new members ` +
+          `are enrolled without a face scan. Your gym keeps running in name-board mode — staff check ` +
+          `members in from the members list.\n\n` +
+          `Nothing has been deleted. Every enrolled face is kept and comes straight back if this is ` +
+          `switched on again.\n\n`
+        : `What this means: your bot stops sending expiry reminders, absence nudges and receipts. ` +
+          `Members will not receive Telegram messages from your gym.\n\n` +
+          `Nothing has been deleted. Your bot token is kept and reconnects if this is switched on again.\n\n`) +
+      `To ask about this, contact the platform administrator at ${env.platformAdmin.email}.`;
+
+  return deliver(gymId, subject, text, { platform_action: 'feature', feature, allowed });
 }
 
 /** Email the platform admin (you) — new registrations, expiring subscriptions, … */
