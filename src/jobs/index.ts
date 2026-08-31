@@ -13,6 +13,7 @@ import * as auditLogModel from '../models/auditLogModel';
 import * as notificationModel from '../models/notificationModel';
 import * as botManager from '../telegram/botManager';
 import * as platformAlert from '../services/platformAlertService';
+import * as platformModel from '../models/platformModel';
 
 /**
  * Jobs:
@@ -58,30 +59,14 @@ const NOTIFICATION_RETENTION_DAYS = 7;
 export function startJobs(): void {
   if (dbAutosuspends) startDbKeepAlive();
 
-  cron.schedule('5 0 * * *', async () => {
-    try {
-      await recomputeAllGyms();
-      const purged = await guestModel.purgeExpiredDescriptors();
-      // eslint-disable-next-line no-console
-      console.log(`[jobs] daily status recompute done, purged ${purged} expired guest descriptors`);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[jobs] status recompute failed', err);
-    }
+  // 00:05 — maintenance only, no messages. Safe to repeat and safe at
+  // midnight; runDailyTasks repeats it so a sleeping instance still gets it.
+  cron.schedule('5 0 * * *', () => void runMaintenance());
 
-    // Storage retention. Runs after the recompute, inside the same nightly
-    // wake-up, so pruning never costs a compute start of its own.
-    try {
-      const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
-      const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
-      const notes = await notificationModel.purgeOlderThan(NOTIFICATION_RETENTION_DAYS);
-      // eslint-disable-next-line no-console
-      console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications`);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[jobs] retention prune failed', err);
-    }
-  });
+  // 09:00 — the batch that talks to people. Fires only if the instance happens
+  // to be awake; the external scheduler's ping is the actual guarantee, and
+  // whichever arrives first claims the day.
+  cron.schedule('0 9 * * *', () => void runDailyTasks());
 
   cron.schedule('*/15 * * * *', async () => {
     if (!checkoutSweep.shouldRun()) return;
@@ -91,23 +76,6 @@ export function startJobs(): void {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[jobs] auto-checkout failed', err);
-    }
-  });
-
-  cron.schedule('0 9 * * *', async () => {
-    // Both passes deliver over Telegram and already skip any gym without a
-    // running bot — but only after `gymModel.listAll()` has woken Postgres to
-    // tell them which gyms those are. When no gym has a bot at all, that wake
-    // is pure cost, so the in-memory check comes first.
-    if (!botManager.hasAnyBot()) return;
-    try {
-      await notificationService.runExpiryReminders();
-      await notificationService.runAbsenceNudges();
-      // eslint-disable-next-line no-console
-      console.log('[jobs] 09:00 reminders + nudges done');
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[jobs] reminders failed', err);
     }
   });
 
@@ -127,25 +95,92 @@ export function startJobs(): void {
     }
   });
 
-  // 08:00 daily: subscription reminders on the 30/14/7/3/1/0-days-left ladder
-  // — to the PLATFORM admin (all gyms, one digest) and, when the paywall is
-  // on, to each gym OWNER so they can renew themselves before being locked out.
-  cron.schedule('0 8 * * *', async () => {
-    try {
-      await platformAlert.runSubscriptionAlerts();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[jobs] platform subscription alerts failed', err);
-    }
-    try {
-      await platformAlert.runOwnerRenewalReminders();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[jobs] owner renewal reminders failed', err);
-    }
-  });
 }
 
+
+/**
+ * Everything that is safe to repeat: recompute member statuses, drop expired
+ * guest descriptors, prune the log tables. No messages are sent, so this can
+ * run at midnight, twice, or on a whim without consequence.
+ */
+export async function runMaintenance(): Promise<void> {
+  try {
+    await recomputeAllGyms();
+    const purged = await guestModel.purgeExpiredDescriptors();
+    // eslint-disable-next-line no-console
+    console.log(`[jobs] status recompute done, purged ${purged} expired guest descriptors`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[jobs] status recompute failed', err);
+  }
+
+  try {
+    const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
+    const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
+    const notes = await notificationModel.purgeOlderThan(NOTIFICATION_RETENTION_DAYS);
+    // eslint-disable-next-line no-console
+    console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications`);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[jobs] retention prune failed', err);
+  }
+}
+
+/**
+ * The once-a-day batch, and the reason the free tier works.
+ *
+ * Render's free instance sleeps after fifteen idle minutes, and `node-cron`
+ * only fires in a process that is running — so the 09:00 schedule below is a
+ * convenience, not a guarantee. The guarantee is an external scheduler calling
+ * POST /tasks/daily, which wakes the instance and runs this. Both paths land
+ * here, and the day-claim means the first one to arrive does the work.
+ *
+ * Every step is deliberately ordered cheapest-first: maintenance touches only
+ * this gym's own rows, while the message passes fan out to Telegram and SMTP.
+ * A failure in one step must not skip the others, so each is caught on its own.
+ */
+export async function runDailyTasks(): Promise<{ ran: boolean }> {
+  if (!(await platformModel.claimDailyRun())) {
+    // eslint-disable-next-line no-console
+    console.log('[jobs] daily batch already ran today — skipping');
+    return { ran: false };
+  }
+
+  await runMaintenance();
+
+  // Both passes skip gyms with no bot anyway, but only after listAll() has
+  // woken Postgres to say which those are. With no bot anywhere that wake is
+  // pure cost, so the in-memory check comes first.
+  if (botManager.hasAnyBot()) {
+    try {
+      await notificationService.runExpiryReminders();
+      await notificationService.runAbsenceNudges();
+      // eslint-disable-next-line no-console
+      console.log('[jobs] member reminders + nudges done');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[jobs] reminders failed', err);
+    }
+  }
+
+  // Subscription reminders on the 30/14/7/3/1/0-days-left ladder — to the
+  // PLATFORM admin (all gyms, one digest) and, when the paywall is on, to each
+  // gym OWNER so they can renew before being locked out.
+  try {
+    await platformAlert.runSubscriptionAlerts();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[jobs] platform subscription alerts failed', err);
+  }
+  try {
+    await platformAlert.runOwnerRenewalReminders();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[jobs] owner renewal reminders failed', err);
+  }
+
+  return { ran: true };
+}
 
 /**
  * Keeps an autosuspending compute awake while the app is in use.

@@ -11,47 +11,113 @@ import * as templates from '../telegram/templates';
 import { dateOnly, daysBetween } from '../utils/dates';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Same-type dedupe window for daily reminders (cron runs once a day at 09:00). */
-const REMINDER_DEDUPE_MS = 20 * 60 * 60 * 1000;
 const NUDGE_DEDUPE_MS = 7 * DAY_MS;
 
 /**
- * 09:00 daily — expiry reminders:
- *   • N days before expiry (N = settings.expiry_reminder_days)
- *   • on expiry day
- *   • the day after expiry (entering the grace period)
+ * How late a reminder may still be delivered.
+ *
+ * This is the tolerance the whole design is built around: the server is not
+ * guaranteed to be awake on any given day, so a milestone that was missed is
+ * picked up on the next run instead of being lost. Beyond a week the message
+ * has stopped being useful — somebody who lapsed ten days ago does not need to
+ * be told today that their membership "expires tomorrow" — and the window also
+ * bounds the query, so switching this on can never send a backlog.
+ */
+const CATCH_UP_DAYS = 7;
+
+/**
+ * Which of the three milestones to send, or null for nothing to say.
+ *
+ * Pure and exported so the decision can be tested against a table of days
+ * rather than a database: this is the part that has to stay right, and it is
+ * the part a passing integration test would quietly hide.
+ *
+ * Two rules, in this order:
+ *   1. Take the MOST urgent milestone the member currently qualifies for.
+ *      Thresholds, not dates — that is what lets a missed day be picked up.
+ *   2. If that one has already gone out, say nothing. Deliberately do not fall
+ *      back to a less urgent unsent milestone: once somebody has been told
+ *      their membership lapsed, "expires in 7 days" is no longer true.
+ */
+export function pickMilestone(
+  daysLeft: number,
+  reminderDays: number,
+  sent: Record<subscriptionModel.ReminderMilestone, Date | null>,
+): subscriptionModel.ReminderMilestone | null {
+  let milestone: subscriptionModel.ReminderMilestone | null = null;
+  if (daysLeft <= reminderDays) milestone = 'ahead';
+  if (daysLeft <= 0) milestone = 'due';
+  if (daysLeft <= -1) milestone = 'grace';
+  if (!milestone || sent[milestone]) return null;
+  return milestone;
+}
+
+/**
+ * Expiry reminders — three per membership period, each sent at most once:
+ *   ahead  — from N days before expiry (N = settings.expiry_reminder_days)
+ *   due    — from expiry day
+ *   grace  — from the day after, when the grace period starts
+ *
+ * Each is a threshold, not a date. Missing a day no longer loses the message,
+ * which is what makes this safe to run on an instance that sleeps.
+ *
+ * When several milestones are outstanding at once — the server was down for
+ * three days — only the most urgent is sent and the rest are closed silently.
+ * A member should hear where they stand today, not receive a three-message
+ * backlog reciting a week they already lived through.
+ *
+ * What was sent is recorded on the subscription row, not looked up in
+ * `notifications`: that table is pruned weekly, and a dedupe that forgets
+ * would tell a lapsed member the same thing again every seven days forever.
  */
 export async function runExpiryReminders(now = new Date()): Promise<void> {
   const today = dateOnly(now);
+
   for (const gym of await gymModel.listAll()) {
     if (!botManager.getBot(gym.id)) continue;
     const settings = gymModel.getSettings(gym);
 
-    for (const row of await subscriptionModel.listLatestWithMemberForGym(gym.id)) {
-      if (row.sub_status === 'frozen') continue;
+    const candidates = await subscriptionModel.listReminderCandidates(
+      gym.id,
+      settings.expiry_reminder_days,
+      CATCH_UP_DAYS,
+    );
+
+    for (const row of candidates) {
       const daysLeft = daysBetween(today, row.expires_at);
 
-      let type: 'expiry_reminder' | 'expired' | null = null;
-      let text = '';
-      if (daysLeft === settings.expiry_reminder_days || daysLeft === 0) {
-        type = 'expiry_reminder';
-        text = templates.expiryReminder(row.full_name, daysLeft, gym.name);
-      } else if (daysLeft === -1) {
-        type = 'expired';
-        text = templates.enteredGrace(row.full_name, Math.max(settings.grace_period_days - 1, 0), gym.name);
-      }
-      if (!type) continue;
+      const milestone = pickMilestone(daysLeft, settings.expiry_reminder_days, {
+        ahead: row.reminded_ahead_at,
+        due: row.reminded_due_at,
+        grace: row.reminded_grace_at,
+      });
+      if (!milestone) continue;
 
-      const last = await notificationModel.lastForMember(row.member_id, type);
-      if (last && now.getTime() - new Date(last.sent_at).getTime() < REMINDER_DEDUPE_MS) continue;
+      const text =
+        milestone === 'grace'
+          ? // Grace runs from the expiry date, so a late delivery has to say
+            // how much is actually left, not repeat the full allowance.
+            templates.enteredGrace(
+              row.full_name,
+              Math.max(settings.grace_period_days + daysLeft, 0),
+              gym.name,
+            )
+          : // Never phrase a late "due" reminder as negative days remaining.
+            templates.expiryReminder(row.full_name, Math.max(daysLeft, 0), gym.name);
 
       await notifier.sendToMember(
         gym.id,
         { id: row.member_id, telegram_chat_id: row.telegram_chat_id },
-        type,
+        milestone === 'grace' ? 'expired' : 'expiry_reminder',
         text,
-        { days_left: daysLeft },
+        { days_left: daysLeft, milestone },
       );
+
+      // Stamped whatever the delivery outcome was. sendToMember records a
+      // failure or a missing chat id as a row and does not throw; retrying a
+      // member who has never linked Telegram would just repeat that failure
+      // every single day.
+      await subscriptionModel.markReminded(row.subscription_id, milestone, now);
     }
   }
 }

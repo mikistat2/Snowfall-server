@@ -1,0 +1,60 @@
+# Wakes the Render free instance once a day and runs the daily batch:
+# expiry reminders, absence nudges, platform/owner subscription alerts, plus
+# maintenance (status recompute, log retention).
+#
+# Why this exists: Render's free plan sleeps a service after 15 idle minutes,
+# and node-cron only fires inside a running process. Without an outside
+# trigger, a gym whose staff happen not to open the app that morning would
+# have every reminder for that day silently skipped.
+#
+# Setup — repository Settings > Secrets and variables > Actions:
+#   API_BASE_URL   https://your-service.onrender.com
+#   TASKS_SECRET   the same value set in the Render environment
+name: Daily tasks
+
+on:
+  schedule:
+    # 06:00 UTC = 09:00 Africa/Addis_Ababa. GitHub's scheduler can run several
+    # minutes late under load, which does not matter here: the batch is
+    # date-claimed, not time-critical.
+    - cron: '0 6 * * *'
+  workflow_dispatch: # lets you trigger a run by hand from the Actions tab
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the instance
+        # A sleeping free instance takes roughly a minute to come up, and the
+        # first request through the door is the one that pays for it. /health
+        # answers without touching Postgres, so this wake costs nothing and
+        # cannot fail for a database reason. Failure is tolerated: the retry
+        # loop below is what actually decides whether the service is up.
+        continue-on-error: true
+        run: curl -sS -m 90 "${{ secrets.API_BASE_URL }}/health" || true
+
+      - name: Trigger the daily batch
+        env:
+          BASE: ${{ secrets.API_BASE_URL }}
+          SECRET: ${{ secrets.TASKS_SECRET }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -sS -o /tmp/body.txt -w '%{http_code}' -m 120 \
+              -X POST "$BASE/tasks/daily" -H "x-tasks-secret: $SECRET" || echo 000)
+            echo "attempt $attempt -> HTTP $code $(cat /tmp/body.txt)"
+
+            # 202 accepted. The batch runs in the background from here, so the
+            # workflow's job is done — it deliberately does not wait for it.
+            [ "$code" = "202" ] && exit 0
+
+            # A real answer that is not 202 is a misconfiguration (401 wrong
+            # secret, 503 no secret set). Retrying cannot fix it, so fail loudly
+            # instead of burning four more minutes.
+            [ "$code" != "000" ] && echo "::error::unexpected $code" && exit 1
+
+            echo "no response yet — instance still cold, retrying in 30s"
+            sleep 30
+          done
+          echo "::error::service did not respond after 5 attempts"
+          exit 1

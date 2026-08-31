@@ -247,3 +247,29 @@ export async function deleteGym(gymId: number): Promise<void> {
     await trx.raw('ALTER TABLE payments ENABLE TRIGGER payments_immutable');
   });
 }
+
+/**
+ * Claims today for the daily batch, returning false if it is already taken.
+ *
+ * The batch has three possible triggers now — the 09:00 cron, the external
+ * scheduler's HTTP ping, and a manual call — and several of the things it does
+ * (the platform digest, the owner renewal emails) have no dedupe of their own,
+ * so two triggers in one day would mean two of every message.
+ *
+ * The claim is a single conditional UPDATE rather than a read-then-write:
+ * Postgres takes a row lock, so of two requests arriving together exactly one
+ * sees a row come back. A cron firing at the same moment as a retried ping is
+ * an ordinary event on a free instance, not a rare one.
+ *
+ * `current_date` is the database's day, which is UTC. That rolls over at
+ * 03:00 in Addis, well clear of any hour these jobs are scheduled for.
+ */
+export async function claimDailyRun(): Promise<boolean> {
+  const result = await db.raw(`
+    UPDATE platform_settings
+      SET daily_tasks_ran_on = current_date
+      WHERE daily_tasks_ran_on IS DISTINCT FROM current_date
+      RETURNING daily_tasks_ran_on
+  `);
+  return result.rows.length > 0;
+}

@@ -36,6 +36,13 @@ export const env = {
       ...NATIVE_ORIGINS,
     ]),
   ),
+  /**
+   * Shared secret for POST /tasks/daily, the external scheduler's trigger.
+   * Unset disables the endpoint outright rather than leaving it open — an
+   * unauthenticated route that sends every member a Telegram message is a
+   * denial-of-service button, and an empty-string comparison would pass.
+   */
+  tasksSecret: process.env.TASKS_SECRET?.trim() || null,
   autoMigrate: optional('AUTO_MIGRATE', 'true') === 'true',
   databaseUrl: process.env.DATABASE_URL,
   db: {

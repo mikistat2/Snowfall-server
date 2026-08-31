@@ -6,6 +6,7 @@ import { env } from './config/env';
 import { api } from './routes';
 import { errorHandler } from './middleware/error';
 import { markActivity } from './utils/activity';
+import { runDailyTasks } from './jobs';
 
 export function createApp(): express.Express {
   const app = express();
@@ -28,6 +29,42 @@ export function createApp(): express.Express {
   // route is excluded from activity tracking below so that a monitor ping is
   // never mistaken for a person using the app.
   app.get('/health', (_req, res) => res.json({ ok: true }));
+
+  /**
+   * The daily batch, triggered from outside.
+   *
+   * Render's free instance sleeps after fifteen idle minutes and takes the
+   * cron schedule down with it, so an external scheduler (GitHub Actions,
+   * cron-job.org — see .github/workflows/daily-tasks.yml) calls this once a
+   * day. The request itself is what wakes the instance.
+   *
+   * It answers 202 immediately and does the work afterwards: a cold start is
+   * most of a minute before this handler is even reached, and free schedulers
+   * time out long before a full pass over every gym would finish. The reply
+   * only confirms the trigger was accepted — whether the run did anything is
+   * in the logs, and the day-claim inside runDailyTasks makes a retry after a
+   * timeout harmless.
+   *
+   * Registered above markActivity so a scheduler ping is never mistaken for a
+   * person using the app.
+   */
+  app.post('/tasks/daily', (req, res) => {
+    if (!env.tasksSecret) {
+      res.status(503).json({ error: 'TASKS_SECRET is not configured' });
+      return;
+    }
+    // Compared against a header rather than a query parameter so the secret
+    // stays out of proxy and access logs.
+    if (req.get('x-tasks-secret') !== env.tasksSecret) {
+      res.status(401).json({ error: 'Bad or missing x-tasks-secret' });
+      return;
+    }
+    res.status(202).json({ accepted: true });
+    void runDailyTasks().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[tasks] daily batch failed', err);
+    });
+  });
 
   app.use((_req, _res, next) => {
     markActivity();
