@@ -52,6 +52,14 @@ const summarySweep = createSweepGate(SWEEP_SAFETY_MS);
  * That was an explicit call — widen AUDIT_RETENTION_DAYS if a dispute ever
  * needs more history than that.
  */
+/**
+ * Render runs its containers in UTC, and node-cron follows the process clock,
+ * so '0 9 * * *' meant noon in Addis — three hours off the hour it claims.
+ * Only the schedules a human would recognise need this; the every-N-minutes
+ * sweeps are unaffected by which zone they are counted in.
+ */
+const TIMEZONE = 'Africa/Addis_Ababa';
+
 const EVENT_RETENTION_DAYS = 90;
 const AUDIT_RETENTION_DAYS = 7;
 const NOTIFICATION_RETENTION_DAYS = 7;
@@ -61,12 +69,12 @@ export function startJobs(): void {
 
   // 00:05 — maintenance only, no messages. Safe to repeat and safe at
   // midnight; runDailyTasks repeats it so a sleeping instance still gets it.
-  cron.schedule('5 0 * * *', () => void runMaintenance());
+  cron.schedule('5 0 * * *', () => void runMaintenance(), { timezone: TIMEZONE });
 
   // 09:00 — the batch that talks to people. Fires only if the instance happens
   // to be awake; the external scheduler's ping is the actual guarantee, and
   // whichever arrives first claims the day.
-  cron.schedule('0 9 * * *', () => void runDailyTasks());
+  cron.schedule('0 9 * * *', () => void runDailyTasks(), { timezone: TIMEZONE });
 
   cron.schedule('*/15 * * * *', async () => {
     if (!checkoutSweep.shouldRun()) return;
@@ -97,6 +105,47 @@ export function startJobs(): void {
 
 }
 
+
+/**
+ * The day this process last tried the batch, as YYYY-MM-DD.
+ *
+ * Only an optimisation: `claimDailyRun` in the database is what actually
+ * decides, and it stays correct across restarts, which this cannot. This just
+ * keeps the other ten thousand requests that day from each asking.
+ *
+ * UTC, to match the `current_date` the database claims on.
+ */
+let dailyAttemptedOn: string | null = null;
+
+/**
+ * Runs the daily batch if it has not run yet today. Safe to call on every
+ * request; it is a no-op after the first one of the day.
+ *
+ * This is the trigger that actually fits how the gyms work. The free instance
+ * sleeps, so the 09:00 cron only fires on the days someone happens to be using
+ * the app at exactly that minute — and an external ping needs a scheduler that
+ * has to be set up and kept alive. Staff opening the app is the one thing that
+ * reliably happens, so that is what it hangs off.
+ *
+ * Deliberately not awaited: the request that triggers it must not wait for a
+ * pass over every gym. The member reminders it sends have a whole day of slack,
+ * and the caller is a staff member trying to load a page.
+ */
+export function runDailyTasksIfDue(): void {
+  const today = new Date().toISOString().slice(0, 10);
+  if (dailyAttemptedOn === today) return;
+  // Set before the await, not after: two requests arriving together must not
+  // both get through. The database claim would catch it anyway, but there is
+  // no reason to make it.
+  dailyAttemptedOn = today;
+
+  void runDailyTasks().catch((err) => {
+    // Let the next request try again rather than staying silent all day.
+    dailyAttemptedOn = null;
+    // eslint-disable-next-line no-console
+    console.error('[jobs] opportunistic daily batch failed', err);
+  });
+}
 
 /**
  * Everything that is safe to repeat: recompute member statuses, drop expired

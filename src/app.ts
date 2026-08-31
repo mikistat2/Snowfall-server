@@ -6,7 +6,7 @@ import { env } from './config/env';
 import { api } from './routes';
 import { errorHandler } from './middleware/error';
 import { markActivity } from './utils/activity';
-import { runDailyTasks } from './jobs';
+import { runDailyTasks, runDailyTasksIfDue } from './jobs';
 
 export function createApp(): express.Express {
   const app = express();
@@ -68,6 +68,14 @@ export function createApp(): express.Express {
 
   app.use((_req, _res, next) => {
     markActivity();
+    // Somebody is using the app, so the instance is awake — which on the free
+    // plan is the only moment the daily batch is guaranteed to be able to run
+    // at all. No-op after the first request of the day, and never awaited, so
+    // the page this staff member asked for is not held up by it.
+    //
+    // Below the /health route on purpose: an uptime monitor pinging a sleeping
+    // service should not be what decides that members get messaged.
+    runDailyTasksIfDue();
     next();
   });
 
