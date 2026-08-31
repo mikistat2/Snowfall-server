@@ -6,6 +6,7 @@ import * as notificationModel from '../models/notificationModel';
 import * as botManager from '../telegram/botManager';
 import { badRequest, notFound } from '../utils/errors';
 import type { NotificationStatus, NotificationType } from '../models/notificationModel';
+import { pageParams, pagedBody } from '../utils/pagination';
 
 function requireRunningBot(gymId: number): string {
   const status = botManager.getStatus(gymId);
@@ -52,10 +53,10 @@ export async function status(req: Request, res: Response): Promise<void> {
 }
 
 export async function notifications(req: Request, res: Response): Promise<void> {
-  res.json(
-    await notificationModel.list(req.auth.gymId, {
-      type: req.query.type as NotificationType | undefined,
-      status: req.query.status as NotificationStatus | undefined,
-    }),
-  );
+  const result = await notificationModel.list(req.auth.gymId, {
+    type: req.query.type as NotificationType | undefined,
+    status: req.query.status as NotificationStatus | undefined,
+    ...pageParams(req),
+  });
+  res.json(pagedBody(req, result));
 }

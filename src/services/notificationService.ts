@@ -73,7 +73,7 @@ export async function runAbsenceNudges(now = new Date()): Promise<void> {
     const members = await db('members')
       .where({ gym_id: gym.id })
       .whereIn('status', ['active', 'expiring'])
-      .select('id', 'full_name', 'telegram_chat_id', 'joined_at');
+      .select('id', 'full_name', 'telegram_chat_id', 'joined_at', 'absence_nudge_count');
 
     for (const member of members) {
       const lastSeen = lastVisits.get(member.id) ?? member.joined_at;
@@ -83,14 +83,17 @@ export async function runAbsenceNudges(now = new Date()): Promise<void> {
       const lastNudge = await notificationModel.lastForMember(member.id, 'absence_nudge');
       if (lastNudge && now.getTime() - new Date(lastNudge.sent_at).getTime() < NUDGE_DEDUPE_MS) continue;
 
-      const rotation = await notificationModel.countForMember(member.id, 'absence_nudge');
+      // The rotation lives on the member row, not in `notifications` — that
+      // table is pruned weekly, and counting it would restart every member at
+      // the first template.
       await notifier.sendToMember(
         gym.id,
         member,
         'absence_nudge',
-        templates.absenceNudge(rotation, member.full_name, daysAway, gym.name),
+        templates.absenceNudge(member.absence_nudge_count, member.full_name, daysAway, gym.name),
         { days_away: daysAway },
       );
+      await memberModel.bumpAbsenceNudgeCount(member.id);
     }
   }
 }

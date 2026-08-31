@@ -249,3 +249,13 @@ export async function descriptorCount(memberId: number): Promise<number> {
   const row = await db('face_descriptors').where({ member_id: memberId }).count<{ count: string }>('id as count').first();
   return Number(row?.count ?? 0);
 }
+
+/**
+ * Advances the absence-nudge template rotation. Called once per nudge
+ * dispatched, including the ones that failed to deliver or had no chat id —
+ * matching the notification-row count this replaced, so the rotation a member
+ * sees does not change.
+ */
+export async function bumpAbsenceNudgeCount(memberId: number): Promise<void> {
+  await db('members').where({ id: memberId }).increment('absence_nudge_count', 1);
+}

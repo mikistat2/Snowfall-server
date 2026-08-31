@@ -5,6 +5,7 @@ import { asyncHandler } from '../utils/async';
 import { validate } from '../middleware/validate';
 import multer from 'multer';
 import { requireAuth, requireOwner, blockFrozenGym, requireActiveSubscription, requireFeature } from '../middleware/auth';
+import { pageParams, pagedBody } from '../utils/pagination';
 import { adminRouter } from './admin';
 import * as auth from '../controllers/authController';
 import * as plans from '../controllers/planController';
@@ -351,12 +352,12 @@ api.get(
   '/audit-logs',
   requireOwner,
   asyncHandler(async (req, res) => {
-    res.json(
-      await auditLogModel.list(req.auth.gymId, {
-        entity: req.query.entity as string | undefined,
-        action: req.query.action as string | undefined,
-      }),
-    );
+    const result = await auditLogModel.list(req.auth.gymId, {
+      entity: req.query.entity as string | undefined,
+      action: req.query.action as string | undefined,
+      ...pageParams(req),
+    });
+    res.json(pagedBody(req, result));
   }),
 );
 

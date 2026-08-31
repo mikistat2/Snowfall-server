@@ -208,6 +208,12 @@ export interface MemberRow {
   photo_url: string | null;
   status: MemberStatus;
   joined_at: Date;
+  /**
+   * Lifetime count of absence nudges sent, used to rotate the message
+   * templates. Kept here rather than counted from `notifications`, which is
+   * pruned weekly.
+   */
+  absence_nudge_count: number;
   /** Set = removed from the gym's active roster, but kept for their payment history. */
   archived_at: Date | null;
 }
@@ -235,4 +241,19 @@ export interface CheckInRow {
   checkout_method: 'camera' | 'auto' | 'manual' | null;
   decision: DecisionCode;
   confidence: number | null;
+}
+
+/**
+ * One shape for every paginated list endpoint, so the client can share a
+ * single pager component instead of learning each route's envelope.
+ */
+export interface PageMeta {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface Paged<T> extends PageMeta {
+  rows: T[];
 }

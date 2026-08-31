@@ -10,6 +10,7 @@ import * as notificationService from '../services/notificationService';
 import * as guestModel from '../models/guestModel';
 import * as eventModel from '../models/eventModel';
 import * as auditLogModel from '../models/auditLogModel';
+import * as notificationModel from '../models/notificationModel';
 import * as botManager from '../telegram/botManager';
 import * as platformAlert from '../services/platformAlertService';
 
@@ -36,16 +37,23 @@ const checkoutSweep = createSweepGate(SWEEP_SAFETY_MS);
 const summarySweep = createSweepGate(SWEEP_SAFETY_MS);
 
 /**
- * Retention windows for the two append-only log tables, which together are
- * more than half of each gym's storage growth against the 0.5 GB free-tier
- * limit (Neon's was 0.5 GB; Supabase's is 500 MB — the same problem).
+ * Retention windows for the append-only log tables, which together are most of
+ * each gym's storage growth against the 500 MB free-tier limit.
  *
- * Both windows sit far beyond what the UI can reach: the event feed serves the
- * newest 50 rows per gym and the audit page the newest 200, neither paginated.
- * Nothing displayable is deleted — this only stops the tables growing forever.
+ * The event feed is the one window still sized for reading rather than for
+ * storage: it backs the monitor's history and serves the newest 50 rows per
+ * gym, unpaginated.
+ *
+ * Notifications and audit logs are deliberately short. Both pages show the
+ * newest 200 rows and neither is paginated, so a week is all either one can
+ * usefully display. Note what a week costs on the audit side: "who edited this
+ * member" and "who deleted this payment" become unanswerable eight days later.
+ * That was an explicit call — widen AUDIT_RETENTION_DAYS if a dispute ever
+ * needs more history than that.
  */
 const EVENT_RETENTION_DAYS = 90;
-const AUDIT_RETENTION_DAYS = 365;
+const AUDIT_RETENTION_DAYS = 7;
+const NOTIFICATION_RETENTION_DAYS = 7;
 
 export function startJobs(): void {
   if (dbAutosuspends) startDbKeepAlive();
@@ -66,8 +74,9 @@ export function startJobs(): void {
     try {
       const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
       const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
+      const notes = await notificationModel.purgeOlderThan(NOTIFICATION_RETENTION_DAYS);
       // eslint-disable-next-line no-console
-      console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs`);
+      console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications`);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[jobs] retention prune failed', err);
