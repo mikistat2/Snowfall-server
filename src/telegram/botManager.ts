@@ -1,8 +1,10 @@
 import { Bot, GrammyError } from 'grammy';
 import * as gymModel from '../models/gymModel';
 import * as memberModel from '../models/memberModel';
+import * as subscriptionModel from '../models/subscriptionModel';
 import * as userModel from '../models/userModel';
 import * as occupancyService from '../services/occupancyService';
+import { dateOnly, daysBetween } from '../utils/dates';
 import * as templates from './templates';
 
 /**
@@ -10,6 +12,7 @@ import * as templates from './templates';
  * long-polling. Handles:
  *   /start <token>  — one-time deep-link binding for members ("m<token>")
  *                     and owners/staff ("a<token>")
+ *   /days           — the asking member's remaining membership days
  *   /traffic        — current occupancy + quiet/moderate/busy label
  *
  * Telegram allows only ONE getUpdates poll per token. If another instance is
@@ -165,6 +168,59 @@ export async function startBotForGym(gymId: number, token: string, gymName: stri
     await ctx.reply(templates.trafficReply(count, templates.trafficLabel(count)));
   });
 
+  /**
+   * How many days a member has left — the pull counterpart to the expiry
+   * reminders we push.
+   *
+   * Days are counted with the same `daysBetween(today, expires_at)` the
+   * reminder job uses, so a member who asks on the morning of a reminder is
+   * told the same number the reminder will tell them.
+   *
+   * A frozen membership reports its saved days rather than a countdown: the
+   * expiry date is still in the row but is not running down, and quoting it
+   * would tell someone their frozen membership is expiring.
+   */
+  bot.command('days', async (ctx) => {
+    const member = await memberModel.findByTelegramChatId(gymId, ctx.chat.id);
+    if (!member) {
+      await ctx.reply(templates.daysLeftNotLinked(gymName));
+      return;
+    }
+
+    const sub = await subscriptionModel.findCurrentWithPlan(member.id);
+    if (!sub) {
+      await ctx.reply(templates.daysLeftNoSubscription(member.full_name, gymName));
+      return;
+    }
+
+    const gym = await gymModel.findById(gymId);
+    const graceDays = gym ? gymModel.getSettings(gym).grace_period_days : 0;
+    const daysLeft = daysBetween(dateOnly(new Date()), sub.expires_at);
+
+    if (sub.status === 'frozen') {
+      // Frozen stores the remaining allowance explicitly; fall back to the
+      // date only if an older row predates that column being filled in.
+      await ctx.reply(
+        templates.daysLeftReply(
+          member.full_name,
+          Math.max(sub.frozen_days_remaining ?? daysLeft, 0),
+          gymName,
+          'frozen',
+        ),
+      );
+      return;
+    }
+
+    if (daysLeft < 0) {
+      await ctx.reply(
+        templates.daysLeftReply(member.full_name, 0, gymName, 'grace', Math.max(graceDays + daysLeft, 0)),
+      );
+      return;
+    }
+
+    await ctx.reply(templates.daysLeftReply(member.full_name, daysLeft, gymName, 'active'));
+  });
+
   bot.catch((err) => {
     // eslint-disable-next-line no-console
     console.error(`[telegram] gym ${gymId} bot error:`, err.message);
@@ -172,7 +228,23 @@ export async function startBotForGym(gymId: number, token: string, gymName: stri
 
   try {
     const me = await bot.api.getMe();
+    // Registered before any further network call. `hasAnyBot()` reads this map
+    // to decide whether the daily batch has anyone to message, so every
+    // round-trip between here and the insert is a window in which a cold-start
+    // batch concludes there are no bots and skips the day.
     bots.set(gymId, { bot, username: me.username, gymId });
+    // Populates Telegram's own "/" menu, which is the only way a member finds
+    // out these exist — nothing in the app tells them. Not awaited, and
+    // best-effort: a failure costs discoverability, not function.
+    void bot.api
+      .setMyCommands([
+        { command: 'days', description: 'How many days are left on your membership' },
+        { command: 'traffic', description: 'How busy the gym is right now' },
+      ])
+      .catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.error(`[telegram] gym ${gymId} setMyCommands failed:`, (err as Error).message);
+      });
     cancelRetry(gymId); // connected cleanly — reset backoff
     // long polling runs until stop(); don't await. On failure, retry.
     void bot.start({ drop_pending_updates: true }).catch((err: unknown) => {
@@ -210,11 +282,51 @@ export async function restartBot(gymId: number, token: string | null): Promise<v
 }
 
 /** Boot: start bots for every gym that has a token configured *and allowed*. */
-export async function initBots(): Promise<void> {
-  const gyms = await gymModel.listAll();
-  for (const gym of gyms) {
-    if (gym.telegram_bot_token && gym.telegram_allowed) {
-      await startBotForGym(gym.id, gym.telegram_bot_token, gym.name);
+/**
+ * The startup pass, exposed so callers can wait for it.
+ *
+ * Starts resolved: before boot has called `initBots` there is nothing to wait
+ * for, and a caller must never block on a pass that will never run.
+ */
+let startupPass: Promise<void> = Promise.resolve();
+
+export function initBots(): Promise<void> {
+  startupPass = (async () => {
+    const gyms = await gymModel.listAll();
+    for (const gym of gyms) {
+      if (gym.telegram_bot_token && gym.telegram_allowed) {
+        await startBotForGym(gym.id, gym.telegram_bot_token, gym.name);
+      }
     }
-  }
+  })();
+  return startupPass;
+}
+
+/**
+ * Resolves once every gym's bot has been registered (or the pass gave up).
+ *
+ * `hasAnyBot()` reads an in-memory map that `initBots` fills one gym at a time,
+ * each behind a network round-trip to Telegram. Boot does not await that pass
+ * before it starts listening, so a request arriving on a cold instance — which
+ * is precisely when the external scheduler's POST /tasks/daily arrives — can
+ * read the map while it is still empty, conclude no gym has a bot, and skip
+ * every member message for a day that is already claimed.
+ *
+ * The timeout is the point: a Telegram API that is slow or unreachable must
+ * delay the batch, never strand it. Resolving instead of rejecting on timeout
+ * means the caller carries on with whatever registered in time, which is the
+ * same outcome as before this existed.
+ */
+export function whenBotsReady(timeoutMs = 30_000): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+    // Never hold the process open on this alone.
+    timer.unref();
+  });
+  // The rejection is already handled where initBots was called; swallowing it
+  // here keeps a failed pass from turning into a second unhandled rejection.
+  return Promise.race([startupPass.catch(() => undefined), deadline]).finally(() =>
+    clearTimeout(timer),
+  );
 }

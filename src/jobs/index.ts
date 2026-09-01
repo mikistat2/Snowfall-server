@@ -197,6 +197,13 @@ export async function runDailyTasks(): Promise<{ ran: boolean }> {
 
   await runMaintenance();
 
+  // Wait for the startup pass before reading the map. On a cold instance this
+  // batch is usually what woke the process, so without this the check below
+  // races bot registration — and losing that race skips every member message
+  // for a day the claim above has already spent. Resolved immediately once the
+  // bots are up, so a warm instance pays nothing.
+  await botManager.whenBotsReady();
+
   // Both passes skip gyms with no bot anyway, but only after listAll() has
   // woken Postgres to say which those are. With no bot anywhere that wake is
   // pure cost, so the in-memory check comes first.

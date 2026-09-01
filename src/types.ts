@@ -124,6 +124,12 @@ export interface BillingPlanRow {
   currency: string;
   is_active: boolean;
   sort_order: number;
+  /** What the package includes — see the billing_plan_packages migration. */
+  camera: boolean;
+  telegram: boolean;
+  /** NULL = unlimited. */
+  member_limit: number | null;
+  setup_fee: string; // NUMERIC, like the prices
 }
 
 export interface BillingSettings {

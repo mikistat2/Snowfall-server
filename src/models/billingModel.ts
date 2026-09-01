@@ -94,6 +94,10 @@ export async function createPlan(data: {
   currency?: string;
   sort_order?: number;
   is_active?: boolean;
+  camera?: boolean;
+  telegram?: boolean;
+  member_limit?: number | null;
+  setup_fee?: number;
 }): Promise<BillingPlanRow> {
   const [row] = await db('billing_plans').insert(data).returning('*');
   return row;
@@ -109,6 +113,10 @@ export async function updatePlan(
     currency: string;
     sort_order: number;
     is_active: boolean;
+    camera: boolean;
+    telegram: boolean;
+    member_limit: number | null;
+    setup_fee: number;
   }>,
 ): Promise<BillingPlanRow | undefined> {
   const [row] = await db('billing_plans')

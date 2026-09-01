@@ -235,6 +235,25 @@ export async function findByLinkToken(token: string): Promise<MemberRow | undefi
   return db('members').where({ telegram_link_token: token }).first();
 }
 
+/**
+ * The member behind a Telegram chat, for commands the member sends us.
+ *
+ * Scoped to the gym whose bot received the message: one person can be a member
+ * of two gyms running two bots from the same Telegram account, and each bot
+ * must answer about its own gym only. Archived members are excluded — they
+ * still hold their chat id, and someone removed from the gym should not keep
+ * querying it.
+ */
+export async function findByTelegramChatId(
+  gymId: number,
+  chatId: number,
+): Promise<MemberRow | undefined> {
+  return db('members')
+    .where({ gym_id: gymId, telegram_chat_id: chatId })
+    .whereNull('archived_at')
+    .first();
+}
+
 export async function bindTelegram(
   memberId: number,
   chatId: number,

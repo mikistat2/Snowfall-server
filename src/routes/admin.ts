@@ -163,6 +163,12 @@ const planBody = z.object({
   currency: z.string().min(1).max(8).optional(),
   sort_order: z.number().int().min(0).max(999).optional(),
   is_active: z.boolean().optional(),
+  // What the package includes. `member_limit` is null for unlimited, matching
+  // the column; the CHECK constraint refuses zero and negatives.
+  camera: z.boolean().optional(),
+  telegram: z.boolean().optional(),
+  member_limit: z.number().int().positive().nullable().optional(),
+  setup_fee: z.number().nonnegative().optional(),
 });
 adminRouter.get('/billing/plans', requirePlatformOwner, asyncHandler(billing.listPlans));
 adminRouter.post('/billing/plans', requirePlatformOwner, validate(planBody), asyncHandler(billing.createPlan));
