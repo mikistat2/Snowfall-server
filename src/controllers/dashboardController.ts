@@ -71,7 +71,15 @@ export async function stats(req: Request, res: Response): Promise<void> {
  * "Today" digest for the sidebar page: everything that happened today (new
  * members, payments, check-ins, guest passes) plus who is about to expire in
  * the next 7 days and who just expired in the last 7 — actionable follow-ups.
+ *
+ * Not paginated, and deliberately so: every list here is bounded by a date
+ * window rather than by the size of the gym. "Today" resets each morning and
+ * the expiry window is fourteen days wide, so none of them grows without limit
+ * the way the members roster does. The one exception is the payment list, which
+ * grows with how busy the day was — that one is capped below.
  */
+const TODAY_PAYMENT_ROWS = 50;
+
 export async function today(req: Request, res: Response): Promise<void> {
   const gymId = req.auth.gymId;
   const now = new Date();
@@ -112,14 +120,35 @@ export async function today(req: Request, res: Response): Promise<void> {
     `,
       [gymId],
     ),
+    /**
+     * Today's payments: the count and the sum over all of them, but only the
+     * newest `TODAY_PAYMENT_ROWS` rows to display.
+     *
+     * The two are separated on purpose. The tile shows the day's takings and
+     * has to be exact, so it is aggregated in SQL rather than by adding up
+     * whatever rows were sent. The list underneath is a glance at the recent
+     * few — nobody scrolls a day's receipts here, that is what the Payments
+     * page is for — so capping it bounds a response that would otherwise grow
+     * with how busy the gym was.
+     */
     db.raw(
       `
-      SELECT p.id, p.amount, p.method, p.created_at, m.full_name AS member_name
-      FROM payments p JOIN members m ON m.id = p.member_id
-      WHERE p.gym_id = ? AND p.created_at >= ?
-      ORDER BY p.created_at DESC
+      SELECT
+        (SELECT count(*)::int FROM payments
+          WHERE gym_id = :gymId AND created_at >= :start)                    AS count,
+        (SELECT coalesce(sum(amount), 0) FROM payments
+          WHERE gym_id = :gymId AND created_at >= :start)                    AS total,
+        coalesce((
+          SELECT json_agg(r) FROM (
+            SELECT p.id, p.amount, p.method, p.created_at, m.full_name AS member_name
+            FROM payments p JOIN members m ON m.id = p.member_id
+            WHERE p.gym_id = :gymId AND p.created_at >= :start
+            ORDER BY p.created_at DESC
+            LIMIT :limit
+          ) r
+        ), '[]'::json)                                                       AS rows
     `,
-      [gymId, startOfDay],
+      { gymId, start: startOfDay, limit: TODAY_PAYMENT_ROWS },
     ),
     db.raw(
       `
@@ -141,14 +170,16 @@ export async function today(req: Request, res: Response): Promise<void> {
       .first(),
   ]);
 
-  const paymentRows = payments.rows as { amount: string }[];
+  const today = payments.rows[0] as { count: number; total: string; rows: unknown[] };
   res.json({
     new_members: newMembers.rows,
     expiring: expiring.rows,
     payments_today: {
-      count: paymentRows.length,
-      total: paymentRows.reduce((sum, p) => sum + Number(p.amount), 0),
-      rows: payments.rows,
+      // count and total are the whole day, from SQL; rows are the capped
+      // display list, so the tile stays right even when the list is trimmed.
+      count: today.count,
+      total: Number(today.total),
+      rows: today.rows,
     },
     check_ins_today: checkInRow.rows[0],
     occupancy,

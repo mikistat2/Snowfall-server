@@ -202,6 +202,15 @@ export interface PlanRow {
   active: boolean;
 }
 
+/**
+ * Where a member's profile picture came from.
+ *
+ * 'manual' outranks 'auto': enrollment grabs a frame off the door camera, but a
+ * staff member who takes or picks a picture has made a choice, and re-running
+ * enrollment must not silently undo it.
+ */
+export type PhotoSource = 'manual' | 'auto';
+
 export interface MemberRow {
   id: number;
   gym_id: number;
@@ -211,7 +220,18 @@ export interface MemberRow {
   telegram_chat_id: number | null;
   telegram_username: string | null;
   telegram_link_token: string | null;
+  /**
+   * Legacy inline base64 photo, written at enrollment before object storage
+   * existed. Still read (newest wins against photo_key) so gyms that predate
+   * the change keep their pictures; nothing writes it any more.
+   */
   photo_url: string | null;
+  /** Unguessable path segment in the photo bucket. Null = no stored photo. */
+  photo_key: string | null;
+  /** Cache-buster, bumped on every replacement. 0 exactly when photo_key is null. */
+  photo_version: number;
+  /** Whether a human chose this picture or enrollment grabbed it off the camera. */
+  photo_source: 'manual' | 'auto' | null;
   status: MemberStatus;
   joined_at: Date;
   /**

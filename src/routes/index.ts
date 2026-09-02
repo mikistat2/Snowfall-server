@@ -64,12 +64,46 @@ const memberInfoSchema = z.object({
   photo_url: z.string().nullable().optional(),
 });
 
+/**
+ * A profile picture upload: two renditions of the same image, already shrunk
+ * by the browser.
+ *
+ * Only the shape is checked here — that a string is a base64 image data URL of
+ * an allowed type and a sane size is decided in memberPhotoService, which has
+ * to decode the bytes to know. The cap below is a cheap first gate so a
+ * multi-megabyte body is rejected before anything tries to parse it.
+ */
+const photoSchema = z.object({
+  thumb: z.string().max(300_000),
+  full: z.string().max(600_000),
+  source: z.enum(['manual', 'auto']).optional(),
+});
+
+/**
+ * The amount taken for a membership period.
+ *
+ * Required, as of this version. It used to be optional and fall back to the
+ * plan's list price, which meant a blank field and a discounted sale recorded
+ * the same number — the gym's revenue figures quietly disagreed with its till.
+ * Now the person taking the money has to state it.
+ *
+ * Zero is still accepted, and deliberately: a comped or promotional membership
+ * is a real thing a gym does, and the DB has always allowed it
+ * (`CHECK (amount >= 0)`). The difference is that zero must now be typed on
+ * purpose rather than arrived at by leaving a field alone.
+ *
+ * This is forward-looking only. Nothing revalidates the members and payments
+ * already on file, and no migration touches them — memberships enrolled before
+ * this change stay exactly as they are.
+ */
+const paymentAmount = z.number().nonnegative();
+
 const enrollSchema = z.object({
   member: memberInfoSchema,
   descriptors: z.array(descriptor).max(5).default([]),
   plan_id: z.number().int().positive(),
   payment: z.object({
-    amount: z.number().nonnegative().optional(),
+    amount: paymentAmount,
     method: paymentMethod,
     note: z.string().optional(),
   }),
@@ -92,10 +126,16 @@ const previousMemberSchema = z.object({
   starts_at: dateOnlyString,
   /** Omitted = start date + the plan's duration. */
   expires_at: dateOnlyString.optional(),
-  /** Omitted = the money was taken before the system existed and is not being recorded. */
+  /**
+   * Omitted = the money was taken before the system existed and is not being
+   * recorded. That stays optional: this page back-fills a paper register, and
+   * most of those payments happened months ago in a notebook. But if a payment
+   * IS being recorded here, its amount is required like any other — the choice
+   * is whether to log one, never how much it vaguely was.
+   */
   payment: z
     .object({
-      amount: z.number().nonnegative().optional(),
+      amount: paymentAmount,
       method: paymentMethod,
       note: z.string().optional(),
     })
@@ -130,7 +170,7 @@ const memberUpdateSchema = z
 
 const renewSchema = z.object({
   plan_id: z.number().int().positive(),
-  amount: z.number().nonnegative().optional(),
+  amount: paymentAmount,
   method: paymentMethod,
   note: z.string().optional(),
 });
@@ -310,6 +350,11 @@ api.post(
   validate(z.object({ descriptors: z.array(descriptor).min(1).max(5), replace: z.boolean().optional() })),
   asyncHandler(members.addDescriptors),
 );
+// Profile pictures. Deliberately NOT behind requireFeature('camera'): a gym on
+// the Regular package has no face recognition, and putting a face to a name is
+// exactly what it is missing at the front desk.
+api.put('/members/:id/photo', validate(photoSchema), asyncHandler(members.setPhoto));
+api.delete('/members/:id/photo', asyncHandler(members.clearPhoto));
 api.post('/members/:id/renew', validate(renewSchema), asyncHandler(members.renew));
 // Removing someone is owner-only, like every other destructive action here.
 // Archive keeps the payment history; DELETE is refused for anyone who has any.
@@ -369,6 +414,9 @@ api.get('/notifications', asyncHandler(telegram.notifications));
 
 // ---------- payments / dashboard ----------
 api.get('/payments', asyncHandler(payments.list));
+// Before /payments/:id would be, if one is ever added — a literal path must
+// win over a parameter.
+api.get('/payments/summary', asyncHandler(payments.summary));
 api.get('/dashboard/stats', asyncHandler(dashboard.stats));
 api.get('/dashboard/today', asyncHandler(dashboard.today));
 

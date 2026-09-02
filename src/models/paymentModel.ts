@@ -55,6 +55,34 @@ export async function list(
   return q;
 }
 
+/**
+ * Count and sum for the same filter `list` is showing, over every matching row
+ * rather than the page on screen.
+ *
+ * The payments page exists to answer "how much came in": before the list was
+ * paged, it summed the rows it had, which happened to be all of them. Summing
+ * a page instead would quietly turn the headline figure into the total of the
+ * most recent thirty payments — the kind of wrong number a gym owner would act
+ * on. Postgres does the arithmetic over the whole filtered set, which is one
+ * cheap indexed aggregate and cannot drift from the list beside it.
+ */
+export async function summary(
+  gymId: number,
+  filter: { from?: string; to?: string; method?: PaymentMethod; member_id?: number } = {},
+): Promise<{ count: number; total: number }> {
+  const q = db('payments as pay').where('pay.gym_id', gymId);
+  if (filter.from) q.andWhere('pay.created_at', '>=', filter.from);
+  if (filter.to) q.andWhere('pay.created_at', '<', `${filter.to}T23:59:59.999`);
+  if (filter.method) q.andWhere('pay.method', filter.method);
+  if (filter.member_id) q.andWhere('pay.member_id', filter.member_id);
+
+  const row = await q
+    .count<{ count: string; total: string | null }>('pay.id as count')
+    .sum('pay.amount as total')
+    .first();
+  return { count: Number(row?.count ?? 0), total: Number(row?.total ?? 0) };
+}
+
 export async function listByMember(memberId: number): Promise<PaymentRow[]> {
   return db('payments').where({ member_id: memberId }).orderBy('created_at', 'desc');
 }

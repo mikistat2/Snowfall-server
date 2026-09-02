@@ -84,6 +84,41 @@ export const env = {
     /** Keep the provider's full payload on the payment row (support/debugging). */
     storeRawResponse: optional('VERIFY_STORE_RAW', 'true') === 'true',
   },
+  /**
+   * Where member profile photos are stored.
+   *
+   * Two drivers, chosen by PHOTO_STORAGE:
+   *
+   *  'local'    — writes under server/uploads/photos and serves them back off
+   *               this process. The default, so a fresh clone can capture and
+   *               display a photo with no cloud account and no keys at all.
+   *               Not for production: Render's disk is ephemeral, so every
+   *               deploy would wipe every photo.
+   *
+   *  'supabase' — writes to a public Storage bucket. Public is deliberate: a
+   *               signed URL carries a token that changes per request, so the
+   *               CDN treats every fetch as a new object and the caching that
+   *               makes this affordable never happens. What keeps a photo
+   *               private is the unguessable `photo_key` in its path.
+   *
+   * The service key bypasses every storage policy, so it lives here and never
+   * reaches the browser — uploads go through this API, which already knows
+   * which gym the caller belongs to.
+   */
+  photos: {
+    driver: optional('PHOTO_STORAGE', 'local') as 'local' | 'supabase',
+    /** Absolute origin of this API, used to build URLs for the local driver. */
+    apiUrl: optional('PUBLIC_API_URL', `http://localhost:${optional('PORT', '4000')}`).replace(
+      /\/+$/,
+      '',
+    ),
+    localDir: optional('PHOTO_LOCAL_DIR', 'uploads/photos'),
+    supabase: {
+      url: optional('SUPABASE_URL', '').replace(/\/+$/, ''),
+      serviceKey: optional('SUPABASE_SERVICE_KEY', ''),
+      bucket: optional('SUPABASE_PHOTO_BUCKET', 'member-photos'),
+    },
+  },
   // Feedback email (Gmail SMTP). SMTP_USER/SMTP_PASS must be a Gmail address
   // + App Password (2-Step Verification required) for sending to work.
   mail: {

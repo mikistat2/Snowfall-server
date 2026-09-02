@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { env } from './config/env';
 import { api } from './routes';
 import { errorHandler } from './middleware/error';
+import * as photoStorage from './services/photoStorage';
 import { markActivity } from './utils/activity';
 import { runDailyTasks, runDailyTasksIfDue } from './jobs';
 
@@ -22,6 +23,49 @@ export function createApp(): express.Express {
   app.use(compression());
   app.use(cors({ origin: env.corsOrigins, credentials: true }));
   app.use(express.json({ limit: '10mb' })); // face descriptors + photo data URLs
+
+  /**
+   * Member photos, when PHOTO_STORAGE is the local driver.
+   *
+   * Development only — Render's filesystem is ephemeral, so anything written
+   * here is gone on the next deploy. Real deployments set PHOTO_STORAGE to
+   * 'supabase' and these bytes are served by the CDN instead, never touching
+   * this process. Registered before markActivity because fetching an image is
+   * not a signal that a person is using the app.
+   *
+   * Served with the same one-year lifetime the bucket uses, so the browser
+   * caching behaviour under test locally is the behaviour that ships. The URL
+   * carries ?v=<photo_version>, which is what makes a replaced photo appear.
+   *
+   * No authentication, matching the public bucket it stands in for: what keeps
+   * a photo private is the unguessable key in its path, not a session.
+   */
+  if (env.photos.driver === 'local') {
+    app.use(
+      '/uploads/photos',
+      express.static(photoStorage.localRoot(), {
+        maxAge: '1y',
+        immutable: true,
+        // No directory listing: the whole security model is that a photo's key
+        // cannot be guessed, and an index would hand over every key at once.
+        index: false,
+        dotfiles: 'ignore',
+        setHeaders: (res) => {
+          // helmet defaults every response to Cross-Origin-Resource-Policy:
+          // same-origin, which makes the browser refuse to render these in an
+          // <img> — the client is served from a different origin than the API
+          // in every environment (5173 vs 4001 locally, Vercel vs Render in
+          // production). The Supabase bucket these stand in for is public and
+          // cross-origin by nature, so this matches what ships.
+          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        },
+      }),
+      // express.static calls next() for a path it cannot find, which would
+      // otherwise fall through to the API's catch-all and report a 500 for
+      // what is simply a photo that is not there.
+      (_req, res) => res.status(404).end(),
+    );
+  }
 
   // Cheap liveness probe for UptimeRobot — deliberately does NOT touch the
   // database, so a database wake-up can never make the monitor report the service

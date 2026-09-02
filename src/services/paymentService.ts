@@ -21,7 +21,8 @@ export async function renew(input: {
   gymId: number;
   memberId: number;
   planId: number;
-  amount?: number;
+  /** Required: the amount actually taken, not the plan's list price. */
+  amount: number;
   method: PaymentMethod;
   note?: string;
   userId: number;
@@ -67,7 +68,7 @@ export async function renew(input: {
         gym_id: input.gymId,
         member_id: input.memberId,
         subscription_id: subscriptionId,
-        amount: input.amount ?? Number(plan.price),
+        amount: input.amount,
         method: input.method,
         marked_by: input.userId,
         note: input.note ?? null,

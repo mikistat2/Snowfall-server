@@ -7,6 +7,7 @@ import * as paymentModel from '../models/paymentModel';
 import * as auditLogModel from '../models/auditLogModel';
 import { recomputeMemberStatus } from './statusService';
 import { clearDebounce } from './checkInService';
+import * as memberPhotoService from './memberPhotoService';
 import { addDays, dateAtNoonUtc, dateOnly, dateOnlyUtc, daysBetween } from '../utils/dates';
 import { toGregorianDateOnly, type CalendarSystem } from '../utils/ethiopian';
 import { badRequest, notFound } from '../utils/errors';
@@ -22,7 +23,8 @@ export async function enroll(input: {
   member: { full_name: string; phone?: string; sex?: 'male' | 'female'; photo_url?: string | null };
   descriptors: number[][];
   planId: number;
-  payment: { amount?: number; method: PaymentMethod; note?: string };
+  /** `amount` is required: the till figure is stated, never inferred from the plan. */
+  payment: { amount: number; method: PaymentMethod; note?: string };
 }): Promise<MemberRow> {
   const gym = await gymModel.findById(input.gymId);
   if (!gym) throw notFound('Gym not found');
@@ -58,7 +60,7 @@ export async function enroll(input: {
         gym_id: input.gymId,
         member_id: member.id,
         subscription_id: subscription.id,
-        amount: input.payment.amount ?? Number(plan.price),
+        amount: input.payment.amount,
         method: input.payment.method,
         marked_by: input.userId,
         note: input.payment.note ?? 'Enrollment',
@@ -112,7 +114,8 @@ export async function enrollPrevious(input: {
   joinedAt: string;
   startsAt: string;
   expiresAt?: string;
-  payment?: { amount?: number; method: PaymentMethod; note?: string };
+  /** Omitted = a pre-system payment that is not being recorded at all. */
+  payment?: { amount: number; method: PaymentMethod; note?: string };
 }): Promise<MemberRow> {
   const gym = await gymModel.findById(input.gymId);
   if (!gym) throw notFound('Gym not found');
@@ -176,7 +179,7 @@ export async function enrollPrevious(input: {
           gym_id: input.gymId,
           member_id: member.id,
           subscription_id: subscription.id,
-          amount: input.payment.amount ?? Number(plan.price),
+          amount: input.payment.amount,
           method: input.payment.method,
           marked_by: input.userId,
           note: input.payment.note ?? 'Previous member (paper record)',
@@ -365,7 +368,16 @@ export async function detail(gymId: number, memberId: number) {
     memberModel.descriptorCount(memberId),
   ]);
 
-  return { member, subscriptions, payments, check_ins: checkIns, descriptor_count: descriptors };
+  // One member, so the legacy inline photo is passed through as a fallback —
+  // ~5 KB on a page that is already loading their whole history. The roster
+  // deliberately does not do this; see memberPhotoService.photoUrls.
+  return {
+    member: { ...member, ...memberPhotoService.photoUrls(member) },
+    subscriptions,
+    payments,
+    check_ins: checkIns,
+    descriptor_count: descriptors,
+  };
 }
 
 /**

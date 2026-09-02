@@ -10,6 +10,25 @@ export interface MemberInput {
 }
 
 /**
+ * One row of the roster: exactly the columns the members list renders, and
+ * nothing else. Notably NOT `photo_url` — see the select below.
+ */
+export type MemberListRow = Pick<
+  MemberRow,
+  | 'id'
+  | 'full_name'
+  | 'phone'
+  | 'sex'
+  | 'telegram_chat_id'
+  | 'status'
+  | 'joined_at'
+  | 'archived_at'
+  | 'photo_key'
+  | 'photo_version'
+  | 'photo_source'
+> & { plan_name: string | null; expires_at: string | null };
+
+/**
  * `limit`/`offset` are optional: the desktop table asks for everything, the
  * mobile list pages through. Ordering is by name, which is stable, so paging
  * cannot skip or repeat a row between requests.
@@ -17,7 +36,7 @@ export interface MemberInput {
 export async function listByGym(
   gymId: number,
   filter: { search?: string; status?: MemberStatus; archived?: boolean; limit?: number; offset?: number } = {},
-): Promise<(MemberRow & { plan_name: string | null; expires_at: string | null })[]> {
+): Promise<MemberListRow[]> {
   const q = db('members as m')
     .where('m.gym_id', gymId)
     // archived members are off the roster: they surface only when asked for by
@@ -33,7 +52,28 @@ export async function listByGym(
       'm.id',
     )
     .leftJoin('plans as p', 'p.id', 's.plan_id')
-    .select('m.*', 'p.name as plan_name', 's.expires_at')
+    // Explicit columns, not m.* — the roster is the largest response this API
+    // serves, and `m.*` drags along every column the list has no use for. The
+    // one that matters is `photo_url`, the legacy inline base64 picture: at
+    // ~5 KB per member it made a 100-member roster a half-megabyte response,
+    // repeated on every load and every keystroke in the search box. Photos now
+    // travel as a URL to a cached object, and the bytes are fetched once per
+    // device instead of once per request.
+    .select(
+      'm.id',
+      'm.full_name',
+      'm.phone',
+      'm.sex',
+      'm.telegram_chat_id',
+      'm.status',
+      'm.joined_at',
+      'm.archived_at',
+      'm.photo_key',
+      'm.photo_version',
+      'm.photo_source',
+      'p.name as plan_name',
+      's.expires_at',
+    )
     .orderBy('m.full_name');
   if (filter.status) q.andWhere('m.status', filter.status);
   if (filter.search) {
