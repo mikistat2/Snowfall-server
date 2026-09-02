@@ -3,6 +3,10 @@ import { db } from '../db/knex';
 import * as checkInModel from '../models/checkInModel';
 import * as paymentModel from '../models/paymentModel';
 import * as occupancyService from '../services/occupancyService';
+import * as memberPhotoService from '../services/memberPhotoService';
+
+/** The photo columns the expiring query selects, for photoUrls(). */
+type PhotoColumns = { photo_key: string | null; photo_version: number };
 
 export async function stats(req: Request, res: Response): Promise<void> {
   const gymId = req.auth.gymId;
@@ -88,7 +92,8 @@ export async function today(req: Request, res: Response): Promise<void> {
   const [newMembers, expiring, payments, checkInRow, occupancy, guestRow] = await Promise.all([
     db.raw(
       `
-      SELECT m.id, m.full_name, m.phone, m.created_at, p.name AS plan_name
+      SELECT m.id, m.full_name, m.phone, m.created_at, p.name AS plan_name,
+             m.photo_key, m.photo_version
       FROM members m
       LEFT JOIN LATERAL (
         SELECT pl.name FROM subscriptions s JOIN plans pl ON pl.id = s.plan_id
@@ -110,6 +115,7 @@ export async function today(req: Request, res: Response): Promise<void> {
         ORDER BY s.member_id, s.expires_at DESC
       )
       SELECT m.id, m.full_name, m.phone, m.status, l.expires_at,
+             m.photo_key, m.photo_version,
              (l.expires_at - CURRENT_DATE)::int AS days_left
       FROM latest l
       JOIN members m ON m.id = l.member_id
@@ -172,8 +178,24 @@ export async function today(req: Request, res: Response): Promise<void> {
 
   const today = payments.rows[0] as { count: number; total: string; rows: unknown[] };
   res.json({
-    new_members: newMembers.rows,
-    expiring: expiring.rows,
+    // Today's sign-ups, with a face each — bounded by the day, so a handful.
+    new_members: (newMembers.rows as PhotoColumns[]).map((row) => ({
+      ...row,
+      ...memberPhotoService.photoUrls(row),
+    })),
+    /**
+     * Photo URLs on the follow-up list.
+     *
+     * These are the members someone is about to phone or chase at the door, so
+     * a face beside the name is worth more here than anywhere else — and it
+     * costs nothing extra: this list is capped by a fourteen-day window, and it
+     * is the same expiring/grace/expired set the roster already loads
+     * thumbnails for, so the images are usually in the browser cache already.
+     */
+    expiring: (expiring.rows as PhotoColumns[]).map((row) => ({
+      ...row,
+      ...memberPhotoService.photoUrls(row),
+    })),
     payments_today: {
       // count and total are the whole day, from SQL; rows are the capped
       // display list, so the tile stays right even when the list is trimmed.
