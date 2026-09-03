@@ -43,7 +43,14 @@ export interface GymRow {
   settings: GymSettings;
   status: 'pending' | 'active' | 'frozen';
   frozen_at: string | null;
+  /** Private to the platform panel — never leaves the admin API. */
   admin_note: string | null;
+  /**
+   * Why the platform froze this gym, in the admin's own words. Unlike
+   * `admin_note` this IS shown to the tenant: it is the body of the 403
+   * GYM_FROZEN every request gets while frozen.
+   */
+  freeze_note: string | null;
   approved_at: string | null;
   subscription_ends_at: string | null;
   is_trial: boolean;

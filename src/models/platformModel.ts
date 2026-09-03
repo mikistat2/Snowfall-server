@@ -64,7 +64,10 @@ export interface GymListRow {
   phone: string | null;
   status: 'pending' | 'active' | 'frozen';
   frozen_at: string | null;
+  /** Private to the platform panel — never sent to the gym. */
   admin_note: string | null;
+  /** The owner-facing reason shown when a frozen gym tries to use the app. */
+  freeze_note: string | null;
   approved_at: string | null;
   subscription_ends_at: string | null;
   is_trial: boolean;
@@ -96,7 +99,7 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
   const { rows } = await db.raw(
     `
     SELECT
-      g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note,
+      g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note, g.freeze_note,
       g.approved_at, g.subscription_ends_at, g.is_trial, g.comped, g.created_at,
       g.camera_allowed, g.telegram_allowed,
       o.name  AS owner_name,
@@ -141,12 +144,18 @@ export async function gymStaff(gymId: number): Promise<GymStaffRow[]> {
 }
 
 export async function setStatus(gymId: number, status: 'active' | 'frozen', note?: string | null): Promise<void> {
-  const patch: Record<string, unknown> = {
-    status,
-    frozen_at: status === 'frozen' ? db.fn.now() : null,
-  };
-  if (note !== undefined) patch.admin_note = note;
-  await db('gyms').where({ id: gymId }).update(patch);
+  await db('gyms')
+    .where({ id: gymId })
+    .update({
+      status,
+      // COALESCE, not now(): re-saving the reason on an already-frozen gym must
+      // not reset the clock, or the panel would report it as freshly frozen.
+      frozen_at: status === 'frozen' ? db.raw('COALESCE(frozen_at, now())') : null,
+      // Cleared on unfreeze so a later freeze with no reason cannot resurface
+      // the previous one. This is the owner-facing reason, never `admin_note`,
+      // which stays private to the platform panel.
+      freeze_note: status === 'frozen' ? (note?.trim() || null) : null,
+    });
 }
 
 export async function setNote(gymId: number, note: string | null): Promise<void> {

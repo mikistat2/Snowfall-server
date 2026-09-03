@@ -105,7 +105,7 @@ export async function login(email: string, password: string): Promise<AuthResult
   const gym = await gymModel.findById(user.gym_id);
   if (!gym) throw unauthorized('Gym not found');
   if (gym.status === 'frozen') {
-    throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+    throw forbidden(gymModel.frozenMessage(gym), 'GYM_FROZEN');
   }
   if (gym.status === 'pending') {
     throw forbidden(
@@ -131,7 +131,7 @@ export async function refresh(refreshToken: string): Promise<AuthResult> {
   const gym = await gymModel.findById(user.gym_id);
   if (!gym) throw unauthorized('Gym not found');
   if (gym.status === 'frozen') {
-    throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+    throw forbidden(gymModel.frozenMessage(gym), 'GYM_FROZEN');
   }
   if (gym.status === 'pending') {
     throw forbidden(

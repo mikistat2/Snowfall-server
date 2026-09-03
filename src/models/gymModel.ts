@@ -74,3 +74,25 @@ export async function listAll(): Promise<GymRow[]> {
 export async function setComped(id: number, comped: boolean): Promise<void> {
   await db('gyms').where({ id }).update({ comped });
 }
+
+/**
+ * The 403 body a frozen gym's owner actually reads.
+ *
+ * Three call sites reject a frozen gym — login, refresh and every
+ * authenticated request — and each has to carry the admin's reason, or the
+ * owner sees a different story depending on which one fired first. Built here
+ * so they cannot drift.
+ *
+ * The reason is the whole point: the freeze alert used to travel only by
+ * Telegram and email, both best effort, so an owner with no linked chat and a
+ * bounced email was locked out with no explanation at all.
+ */
+export function frozenMessage(gym: Pick<GymRow, 'freeze_note'>): string {
+  const note = gym.freeze_note?.trim();
+  if (!note) return 'This gym account has been frozen by the platform. Please contact support.';
+  return (
+    'This gym account has been frozen by the platform.\n\n' +
+    `Reason: ${note}\n\n` +
+    'Contact the platform administrator to restore access.'
+  );
+}

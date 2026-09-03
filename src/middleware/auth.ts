@@ -96,7 +96,7 @@ export async function blockFrozenGym(req: Request, _res: Response, next: NextFun
   if (!gym) throw unauthorized('Gym no longer exists');
   req.gym = gym;
   if (gym.status === 'frozen') {
-    throw forbidden('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+    throw forbidden(gymModel.frozenMessage(gym), 'GYM_FROZEN');
   }
   if (gym.status === 'pending') {
     throw forbidden('This gym registration has not been approved yet.', 'GYM_PENDING');

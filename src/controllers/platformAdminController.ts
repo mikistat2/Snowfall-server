@@ -93,10 +93,13 @@ export async function freezeGym(req: Request, res: Response): Promise<void> {
   const gym = await gymModel.findById(id);
   if (!gym) throw notFound('Gym not found');
   const note = (req.body as { note?: string }).note;
+  // Stored on the gym, so every later 403 can quote it — that is the only
+  // channel guaranteed to reach the owner. Safe to call on an already-frozen
+  // gym: it rewrites the reason and leaves status and frozen_at alone.
   await platformModel.setStatus(id, 'frozen', note ?? undefined);
   // kill active sessions so the freeze takes effect immediately
   await platformModel.revokeGymSessions(id);
-  // tell the owner what happened and why (Telegram + email, best effort)
+  // push the same reason out of band too (Telegram + email, best effort)
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'freeze', note));
   res.json({ ok: true, notified });
 }
