@@ -16,6 +16,16 @@ export async function create(
     approved_at?: Date | null;
     subscription_ends_at?: Date | null;
     comped?: boolean;
+    /** The package signed up for, before any payment has been made. */
+    billing_plan_id?: number | null;
+    /**
+     * Both columns DEFAULT true, which is right for the gyms that predate
+     * them but wrong for a new signup — see authService's UNPAID_ENTITLEMENTS.
+     * Passing them explicitly is what makes a new gym start on what it is
+     * entitled to rather than on everything.
+     */
+    camera_allowed?: boolean;
+    telegram_allowed?: boolean;
   },
   trx: Knex = db,
 ): Promise<GymRow> {

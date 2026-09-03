@@ -20,6 +20,7 @@ import * as billing from '../controllers/billingController';
 import * as features from '../controllers/featureController';
 import * as auditLogModel from '../models/auditLogModel';
 import * as platformModel from '../models/platformModel';
+import * as billingModel from '../models/billingModel';
 import { cameraProxy } from '../controllers/cameraProxyController';
 import * as feedback from '../controllers/feedbackController';
 
@@ -41,6 +42,12 @@ const registerGymSchema = z.object({
     password: z.string().min(8),
     phone: z.string().optional(),
   }),
+  /**
+   * The package the gym signs up for. Optional so an older client — or the
+   * Android app, which has no registration screen — keeps working; the gym
+   * simply has no recorded plan until it pays, as every gym did before this.
+   */
+  planId: z.number().int().positive().optional(),
 });
 
 const planSchema = z.object({
@@ -259,11 +266,37 @@ const receiptUpload = multer({
 
 // ---------- auth ----------
 // public: lets the landing/registration pages advertise an active free trial
+// and show the packages a gym can sign up for.
 api.get(
   '/auth/registration-mode',
   asyncHandler(async (_req, res) => {
-    const { trial_mode, trial_days } = await platformModel.getSettings();
-    res.json({ trial_mode, trial_days });
+    const [{ trial_mode, trial_days }, plans] = await Promise.all([
+      platformModel.getSettings(),
+      billingModel.listPlans(),
+    ]);
+    res.json({
+      trial_mode,
+      trial_days,
+      /**
+       * Prices and contents only — deliberately no internal columns. This is
+       * an unauthenticated endpoint, and the free tier is filtered out because
+       * it is not something a gym can choose: it is where a gym sits before it
+       * pays, and resolveCycle refuses a zero price anyway.
+       */
+      plans: plans
+        .filter((p) => Number(p.monthly_price) > 0)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          monthly_price: p.monthly_price,
+          yearly_price: p.yearly_price,
+          currency: p.currency,
+          camera: p.camera,
+          telegram: p.telegram,
+          setup_fee: p.setup_fee,
+        })),
+    });
   }),
 );
 api.post('/auth/register-gym', authLimiter, validate(registerGymSchema), asyncHandler(auth.registerGym));

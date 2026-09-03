@@ -12,7 +12,7 @@ import {
   hashRefreshToken,
   type AccessPayload,
 } from '../utils/jwt';
-import { conflict, forbidden, unauthorized } from '../utils/errors';
+import { badRequest, conflict, forbidden, unauthorized } from '../utils/errors';
 
 export interface AuthResult {
   accessToken: string;
@@ -27,12 +27,39 @@ export interface PendingRegistration {
   gym: { id: number; name: string };
 }
 
+/**
+ * What a gym is allowed to use before it has paid for anything.
+ *
+ * Telegram but not the camera — the "Regular + Telegram" package. The camera
+ * is not a switch we can honestly flip on signup: it needs an on-site install
+ * and carries a setup fee, so a trial that turned it on would be advertising
+ * something nobody can actually use that day. Telegram costs nothing to grant
+ * and is the half of the product a gym can try on its own.
+ *
+ * The package they CHOSE is still recorded on the gym, so the panel shows what
+ * they came for and a verified payment grants the rest (see billingService's
+ * grantsFor, which is grant-only and will only ever add to this).
+ *
+ * Applies to gyms created from here on. Existing gyms keep both features —
+ * they were created under a `DEFAULT true` and nothing here touches them.
+ */
+const UNPAID_ENTITLEMENTS = { camera_allowed: false, telegram_allowed: true } as const;
+
 export async function registerGym(input: {
   gym: { name: string; address?: string; phone?: string };
   owner: { name: string; email: string; password: string; phone?: string };
+  planId?: number;
 }): Promise<AuthResult | PendingRegistration> {
   const existing = await userModel.findByEmail(input.owner.email);
   if (existing) throw conflict('An account with this email already exists');
+
+  // Checked rather than trusted: the id arrives from an unauthenticated form,
+  // and a retired plan must not be signed up for just because a stale tab
+  // still offers it.
+  const plan = input.planId ? await billingModel.findPlan(input.planId) : null;
+  if (input.planId && (!plan || !plan.is_active)) {
+    throw badRequest('That package is no longer available. Please pick another.');
+  }
 
   const passwordHash = await bcrypt.hash(input.owner.password, 10);
 
@@ -59,7 +86,16 @@ export async function registerGym(input: {
   const comped = !billing.payments_required;
 
   const { gym, user } = await db.transaction(async (trx) => {
-    const gym = await gymModel.create({ ...input.gym, ...trialFields, comped }, trx);
+    const gym = await gymModel.create(
+      {
+        ...input.gym,
+        ...trialFields,
+        comped,
+        billing_plan_id: plan?.id ?? null,
+        ...UNPAID_ENTITLEMENTS,
+      },
+      trx,
+    );
     const user = await userModel.create(
       {
         gym_id: gym.id,
