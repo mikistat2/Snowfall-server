@@ -13,17 +13,9 @@ import * as platformAlert from '../services/platformAlertService';
 import * as auditLogModel from '../models/auditLogModel';
 import * as botManager from '../telegram/botManager';
 import type { BillingCycle, FeatureKey, GymFeatures } from '../types';
-
-/**
- * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
- * most `ms`, then respond anyway — the alert keeps sending in the background.
- */
-async function timeboxed<T>(promise: Promise<T>, ms = 4000): Promise<T | undefined> {
-  return Promise.race([
-    promise,
-    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms).unref?.()),
-  ]);
-}
+// Owner alerts (Telegram/email) must never make the admin UI hang: wait at
+// most `ms`, then respond anyway — the alert keeps sending in the background.
+import { timeboxed } from '../utils/async';
 
 function safeEqual(a: string, b: string): boolean {
   const ha = crypto.createHash('sha256').update(a).digest();

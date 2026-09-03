@@ -76,6 +76,17 @@ export interface GymListRow {
   /** Platform feature entitlements (owner-only switches). */
   camera_allowed: boolean;
   telegram_allowed: boolean;
+  /** The package last paid for. Null until a gym's first verified payment. */
+  plan_name: string | null;
+  billing_cycle: BillingCycle | null;
+  /**
+   * What that package includes. Read against `camera_allowed` /
+   * `telegram_allowed` to spot a gym whose switches no longer match what it
+   * bought — grants are automatic, revocations are not, so the two drift by
+   * design and the panel has to be able to show it.
+   */
+  plan_camera: boolean | null;
+  plan_telegram: boolean | null;
   created_at: string;
   owner_name: string | null;
   owner_email: string | null;
@@ -101,7 +112,13 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
     SELECT
       g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note, g.freeze_note,
       g.approved_at, g.subscription_ends_at, g.is_trial, g.comped, g.created_at,
-      g.camera_allowed, g.telegram_allowed,
+      g.camera_allowed, g.telegram_allowed, g.billing_cycle,
+      -- The package the gym last paid for, and what that package includes, so
+      -- the panel can show both the plan and where a gym's switches disagree
+      -- with it. LEFT: a gym that has never paid has no plan and must still list.
+      pl.name     AS plan_name,
+      pl.camera   AS plan_camera,
+      pl.telegram AS plan_telegram,
       o.name  AS owner_name,
       o.email AS owner_email,
       o.phone AS owner_phone,
@@ -119,6 +136,7 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
       WHERE u.gym_id = g.id AND u.role = 'owner'
       ORDER BY u.id ASC LIMIT 1
     ) o ON TRUE
+    LEFT JOIN billing_plans pl ON pl.id = g.billing_plan_id
     ${where}
     ORDER BY g.created_at DESC
   `,

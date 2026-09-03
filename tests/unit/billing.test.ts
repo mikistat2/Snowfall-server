@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   computePeriod,
+  grantPatch,
+  grantsFor,
   matchAccount,
   namesLookAlike,
   resolveCycle,
@@ -506,5 +508,54 @@ describe('runChecks', () => {
     const out = runChecks(check({ plan: null }));
     expect(byKey(out.checks, 'amount')?.state).toBe('skip');
     expect(out.grantedCycle).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* plan entitlements                                                   */
+/* ------------------------------------------------------------------ */
+
+describe('grantsFor', () => {
+  const plan = (camera: boolean, telegram: boolean): BillingPlanRow => ({
+    ...PLAN,
+    camera,
+    telegram,
+    member_limit: null,
+    setup_fee: '0.00',
+  });
+  const gym = (camera_allowed: boolean, telegram_allowed: boolean) => ({ camera_allowed, telegram_allowed });
+
+  it('grants what the package includes and the gym does not have', () => {
+    expect(grantsFor(gym(false, false), plan(true, true))).toEqual(['camera', 'telegram']);
+    expect(grantsFor(gym(false, false), plan(false, true))).toEqual(['telegram']);
+    expect(grantsFor(gym(false, false), plan(true, false))).toEqual(['camera']);
+  });
+
+  it('grants nothing that is already on — a renewal is not a change', () => {
+    expect(grantsFor(gym(true, true), plan(true, true))).toEqual([]);
+    expect(grantsFor(gym(true, false), plan(true, true))).toEqual(['telegram']);
+  });
+
+  /**
+   * The rule the whole design rests on. Every gym predates the plan columns and
+   * defaults to both features allowed, so a plan that excludes a feature must
+   * leave it alone — mirroring the plan would strip the camera from every gym
+   * on Regular the moment it renewed.
+   */
+  it('never revokes a feature the plan excludes', () => {
+    expect(grantsFor(gym(true, true), plan(false, false))).toEqual([]);
+    expect(grantPatch(grantsFor(gym(true, true), plan(false, false)))).toEqual({});
+  });
+
+  it('grants nothing when the payment names no plan', () => {
+    expect(grantsFor(gym(false, false), null)).toEqual([]);
+    expect(grantsFor(gym(false, false), undefined)).toEqual([]);
+  });
+
+  it('patches only to true, never to false', () => {
+    expect(grantPatch(['camera'])).toEqual({ camera_allowed: true });
+    expect(grantPatch(['telegram'])).toEqual({ telegram_allowed: true });
+    expect(grantPatch(['camera', 'telegram'])).toEqual({ camera_allowed: true, telegram_allowed: true });
+    expect(grantPatch([])).toEqual({});
   });
 });

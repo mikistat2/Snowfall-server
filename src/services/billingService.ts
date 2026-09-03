@@ -3,16 +3,22 @@ import { db } from '../db/knex';
 import { env } from '../config/env';
 import * as billingModel from '../models/billingModel';
 import * as gymModel from '../models/gymModel';
+import * as auditLogModel from '../models/auditLogModel';
+import * as featureNoticeModel from '../models/featureNoticeModel';
+import * as platformAlert from './platformAlertService';
+import * as botManager from '../telegram/botManager';
 import * as verification from './verificationService';
 import * as receiptQr from './receiptQrService';
-import { computePeriod, priceFor, runChecks } from './billingChecks';
+import { computePeriod, grantPatch, grantsFor, priceFor, runChecks } from './billingChecks';
 import { AppError, badRequest, conflict, notFound } from '../utils/errors';
+import { timeboxed } from '../utils/async';
 import type {
   BillingCycle,
   BillingPaymentRow,
   BillingPlanRow,
   BillingProvider,
   BillingSettings,
+  FeatureKey,
   GymRow,
   PaymentCheck,
 } from '../types';
@@ -90,6 +96,60 @@ export function hasAccess(gym: GymRow, settings: BillingSettings, now: Date = ne
   const deadline = new Date(gym.subscription_ends_at);
   deadline.setDate(deadline.getDate() + settings.grace_days);
   return deadline.getTime() > now.getTime();
+}
+
+// --------------------------------------------------------- plan entitlements --
+
+/**
+ * Tell the gym what its payment just switched on.
+ *
+ * Runs AFTER the transaction commits: a notice describing a payment that
+ * rolled back would be a lie, and a Telegram bot cannot be started inside a
+ * transaction at all.
+ *
+ * Best effort throughout. The money is in and the entitlement is set — a mail
+ * server that is down must not turn a successful payment into an error the
+ * gym sees, so everything here is swallowed and logged.
+ */
+async function announceGrants(gym: GymRow, planName: string, granted: FeatureKey[]): Promise<void> {
+  if (granted.length === 0) return;
+  const note = `Included in the ${planName} package you just paid for.`;
+
+  try {
+    // The in-app notice first: it is a row, not a delivery attempt, so it
+    // reaches the owner even with no bot linked and no mail server configured.
+    for (const feature of granted) {
+      await featureNoticeModel.create({
+        gym_id: gym.id,
+        feature,
+        allowed: true,
+        note,
+        changed_by: 'Subscription payment',
+      });
+    }
+
+    // Started before the alert goes out, because news about Telegram wants a
+    // running bot to travel on — same ordering as the platform panel's grant.
+    if (granted.includes('telegram') && gym.telegram_bot_token) {
+      await botManager.restartBot(gym.id, gym.telegram_bot_token);
+    }
+
+    await auditLogModel.log({
+      gym_id: gym.id,
+      user_id: null,
+      action: 'billing.features_granted',
+      entity: 'gym',
+      entity_id: gym.id,
+      meta: { plan: planName, granted, by: 'payment' },
+    });
+
+    await timeboxed(
+      Promise.all(granted.map((f) => platformAlert.notifyFeatureChange(gym.id, gym.name, f, true, note))),
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`[billing] gym ${gym.id}: features granted but could not be announced`, err);
+  }
 }
 
 // ---------------------------------------------------------------- checkout --
@@ -374,6 +434,7 @@ async function activate(
   checks: PaymentCheck[],
 ): Promise<SubmitResult> {
   const { start, end } = computePeriod(ctx.gym.subscription_ends_at, grantedCycle);
+  const granted = grantsFor(ctx.gym, ctx.plan);
 
   try {
     const payment = await db.transaction(async (trx) => {
@@ -389,17 +450,24 @@ async function activate(
         } as never,
         trx,
       );
-      await trx('gyms').where({ id: ctx.gym.id }).update({
-        subscription_ends_at: end,
-        billing_plan_id: ctx.plan?.id ?? null,
-        billing_cycle: grantedCycle,
-        is_trial: false,
-        // A gym that has now paid is active; approval was implicit in the money.
-        status: ctx.gym.status === 'pending' ? 'active' : ctx.gym.status,
-        approved_at: ctx.gym.approved_at ?? new Date(),
-      });
+      await trx('gyms')
+        .where({ id: ctx.gym.id })
+        .update({
+          subscription_ends_at: end,
+          billing_plan_id: ctx.plan?.id ?? null,
+          billing_cycle: grantedCycle,
+          is_trial: false,
+          // A gym that has now paid is active; approval was implicit in the money.
+          status: ctx.gym.status === 'pending' ? 'active' : ctx.gym.status,
+          approved_at: ctx.gym.approved_at ?? new Date(),
+          // Whatever the package includes and the gym does not have yet.
+          ...grantPatch(granted),
+        });
       return row;
     });
+
+    // After the commit, and never allowed to fail the payment. See announceGrants.
+    await announceGrants(ctx.gym, ctx.plan?.name ?? '', granted);
 
     return {
       verified: true,
@@ -448,6 +516,9 @@ export async function recordManualPayment(input: {
 
   const { start, end } = computePeriod(input.startNow ? null : gym.subscription_ends_at, input.cycle);
   const wasTrial = gym.is_trial;
+  // A payment an admin records by hand buys the same package a self-service
+  // one does, so it grants the same features.
+  const granted = grantsFor(gym, plan);
 
   const payment = await db.transaction(async (trx) => {
     const row = await billingModel.createPayment(
@@ -475,16 +546,21 @@ export async function recordManualPayment(input: {
       } as never,
       trx,
     );
-    await trx('gyms').where({ id: gym.id }).update({
-      subscription_ends_at: end,
-      billing_plan_id: plan?.id ?? gym.billing_plan_id,
-      billing_cycle: input.cycle,
-      is_trial: false,
-      status: gym.status === 'pending' ? 'active' : gym.status,
-      approved_at: gym.approved_at ?? new Date(),
-    });
+    await trx('gyms')
+      .where({ id: gym.id })
+      .update({
+        subscription_ends_at: end,
+        billing_plan_id: plan?.id ?? gym.billing_plan_id,
+        billing_cycle: input.cycle,
+        is_trial: false,
+        status: gym.status === 'pending' ? 'active' : gym.status,
+        approved_at: gym.approved_at ?? new Date(),
+        ...grantPatch(granted),
+      });
     return row;
   });
+
+  await announceGrants(gym, plan?.name ?? '', granted);
 
   return {
     payment,
