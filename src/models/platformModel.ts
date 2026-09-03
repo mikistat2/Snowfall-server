@@ -1,4 +1,5 @@
 import { db } from '../db/knex';
+import { computePeriod } from '../services/billingChecks';
 import type { BillingCycle, PlatformSettings } from '../types';
 
 /**
@@ -181,15 +182,20 @@ export async function setNote(gymId: number, note: string | null): Promise<void>
 }
 
 /** Approve a pending registration: active + paid year starting now. */
-export async function approveGym(gymId: number): Promise<Date> {
-  const ends = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+export async function approveGym(gymId: number, cycle: BillingCycle = 'YEARLY'): Promise<Date> {
+  // computePeriod rather than +365 days: it is the same month arithmetic every
+  // renewal already uses, so an approved month lands on the same day next
+  // month rather than 30 days later. `null` starts the period today, which is
+  // what approval means — there is no earlier time to stack onto.
+  const { end } = computePeriod(null, cycle);
   await db('gyms').where({ id: gymId }).update({
     status: 'active',
     approved_at: db.fn.now(),
-    subscription_ends_at: ends,
+    subscription_ends_at: end,
+    billing_cycle: cycle,
     is_trial: false,
   });
-  return ends;
+  return end;
 }
 
 /**

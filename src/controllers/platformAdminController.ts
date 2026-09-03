@@ -229,9 +229,12 @@ export async function approveGym(req: Request, res: Response): Promise<void> {
   const gym = await gymModel.findById(id);
   if (!gym) throw notFound('Gym not found');
   if (gym.status !== 'pending') throw forbidden('Only pending registrations can be approved');
-  const ends = await platformModel.approveGym(id);
+  // The admin's choice wins; otherwise honour the cycle the gym picked when it
+  // registered, and fall back to a year — which is what approval always did.
+  const cycle = (req.body as { cycle?: BillingCycle }).cycle ?? gym.billing_cycle ?? 'YEARLY';
+  const ends = await platformModel.approveGym(id, cycle);
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString()));
-  res.json({ ok: true, subscription_ends_at: ends, notified });
+  res.json({ ok: true, subscription_ends_at: ends, cycle, notified });
 }
 
 /**

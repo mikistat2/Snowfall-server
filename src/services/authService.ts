@@ -13,6 +13,7 @@ import {
   type AccessPayload,
 } from '../utils/jwt';
 import { badRequest, conflict, forbidden, unauthorized } from '../utils/errors';
+import type { BillingCycle } from '../types';
 
 export interface AuthResult {
   accessToken: string;
@@ -49,6 +50,7 @@ export async function registerGym(input: {
   gym: { name: string; address?: string; phone?: string };
   owner: { name: string; email: string; password: string; phone?: string };
   planId?: number;
+  cycle?: BillingCycle;
 }): Promise<AuthResult | PendingRegistration> {
   const existing = await userModel.findByEmail(input.owner.email);
   if (existing) throw conflict('An account with this email already exists');
@@ -92,6 +94,9 @@ export async function registerGym(input: {
         ...trialFields,
         comped,
         billing_plan_id: plan?.id ?? null,
+        // Only meaningful alongside a plan — a cycle with nothing to bill is
+        // not an intention, it is a stray field.
+        billing_cycle: plan ? (input.cycle ?? 'MONTHLY') : null,
         ...UNPAID_ENTITLEMENTS,
       },
       trx,

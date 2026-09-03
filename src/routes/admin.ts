@@ -48,7 +48,13 @@ adminRouter.put(
 );
 
 // permission-gated (the owner always passes)
-adminRouter.post('/gyms/:id/approve', requirePlatformPerm('approve'), asyncHandler(admin.approveGym));
+adminRouter.post(
+  '/gyms/:id/approve',
+  requirePlatformPerm('approve'),
+  // Body optional: no body still means "a year", as approval always did.
+  validate(z.object({ cycle: z.enum(['MONTHLY', 'YEARLY']) }).partial().default({})),
+  asyncHandler(admin.approveGym),
+);
 adminRouter.post(
   '/gyms/:id/renew',
   requirePlatformPerm('renew'),

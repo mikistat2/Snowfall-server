@@ -48,6 +48,12 @@ const registerGymSchema = z.object({
    * simply has no recorded plan until it pays, as every gym did before this.
    */
   planId: z.number().int().positive().optional(),
+  /**
+   * Monthly or yearly. Recorded, not charged — it is what the gym intends to
+   * be billed, so the approval and the checkout screen can both default to it
+   * instead of guessing.
+   */
+  cycle: z.enum(['MONTHLY', 'YEARLY']).optional(),
 });
 
 const planSchema = z.object({

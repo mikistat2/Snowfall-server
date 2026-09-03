@@ -1,6 +1,12 @@
 import type { Knex } from 'knex';
 import { db } from '../db/knex';
-import { DEFAULT_SETTINGS, type GymFeatures, type GymRow, type GymSettings } from '../types';
+import {
+  DEFAULT_SETTINGS,
+  type BillingCycle,
+  type GymFeatures,
+  type GymRow,
+  type GymSettings,
+} from '../types';
 
 export async function findById(id: number, trx: Knex = db): Promise<GymRow | undefined> {
   return trx('gyms').where({ id }).first();
@@ -16,8 +22,9 @@ export async function create(
     approved_at?: Date | null;
     subscription_ends_at?: Date | null;
     comped?: boolean;
-    /** The package signed up for, before any payment has been made. */
+    /** The package and cycle signed up for, before any payment has been made. */
     billing_plan_id?: number | null;
+    billing_cycle?: BillingCycle | null;
     /**
      * Both columns DEFAULT true, which is right for the gyms that predate
      * them but wrong for a new signup — see authService's UNPAID_ENTITLEMENTS.
