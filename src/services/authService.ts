@@ -96,7 +96,13 @@ export async function registerGym(input: {
         billing_plan_id: plan?.id ?? null,
         // Only meaningful alongside a plan — a cycle with nothing to bill is
         // not an intention, it is a stray field.
-        billing_cycle: plan ? (input.cycle ?? 'MONTHLY') : null,
+        //
+        // Yearly is the fallback, matching what the signup form now selects.
+        // It is only reached when a client sends a plan and no cycle at all,
+        // which today means an old build; defaulting those to monthly while
+        // every current screen shows yearly would record the wrong intent for
+        // exactly the gyms whose choice we cannot see.
+        billing_cycle: plan ? (input.cycle ?? 'YEARLY') : null,
         ...UNPAID_ENTITLEMENTS,
       },
       trx,
