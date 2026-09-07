@@ -79,7 +79,7 @@ async function exportByGym(gymId) {
     LEFT JOIN plans p ON p.id = s.plan_id
     LEFT JOIN LATERAL (
       SELECT count(*) AS cnt, sum(amount) AS total, max(created_at) AS last_at
-      FROM payments WHERE member_id = m.id
+      FROM payments WHERE member_id = m.id AND voided_at IS NULL
     ) pay ON TRUE
     LEFT JOIN LATERAL (
       SELECT count(*) AS cnt, max(checked_in_at) AS last_at
@@ -115,7 +115,14 @@ async function setArchived(gymId, id, archived, trx = knex_1.db) {
         .returning('*');
     return row;
 }
-/** How many payments reference this member — the test for "can this be deleted?". */
+/**
+ * How many payments reference this member — the test for "can this be deleted?".
+ *
+ * Counts voided rows too, unlike every other figure in this file. This one is
+ * not about money: a voided payment is still a row with a foreign key to the
+ * member, so it still blocks the delete. Excluding them here would report a
+ * member as deletable and then fail at the constraint.
+ */
 async function paymentCount(memberId, trx = knex_1.db) {
     const row = await trx('payments').where({ member_id: memberId }).count('id as count').first();
     return Number(row?.count ?? 0);

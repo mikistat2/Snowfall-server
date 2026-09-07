@@ -167,6 +167,12 @@ adminRouter.put(
     z
       .object({
         payments_required: z.boolean(),
+        // Which cycles we sell. Refusing to turn BOTH off cannot be checked
+        // here — this is a patch, so a request may carry only one of them and
+        // the answer depends on the stored value of the other. The controller
+        // decides against the merged state; the DB's CHECK is the backstop.
+        monthly_enabled: z.boolean(),
+        yearly_enabled: z.boolean(),
         cbe_enabled: z.boolean(),
         cbe_account_number: z.string().max(64).nullable(),
         cbe_account_name: z.string().max(200).nullable(),

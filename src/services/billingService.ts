@@ -174,6 +174,11 @@ export interface Checkout {
   currency: string;
   instructions: string | null;
   providers: ProviderOption[];
+  /**
+   * The billing cycles on offer, in display order. Clients shipped before this
+   * field existed ignore it and show both, which is the old behaviour exactly.
+   */
+  cycles: BillingCycle[];
   /** false → no provider is ready, or the verification key is missing. */
   configured: boolean;
   graceDays: number;
@@ -184,16 +189,17 @@ export interface Checkout {
  * verify it. A bank enabled without an account number would happily accept
  * money into an account we cannot check.
  */
+/**
+ * The payment methods a gym can actually use, **most-preferred first**.
+ *
+ * The order is the product decision, not a formatting detail: every client
+ * picks `providers[0]` as its default, so Telebirr leads because that is what
+ * we want gyms to reach for. Reordering this array is how the default moves —
+ * which is also why it changes the default for Android builds that were
+ * shipped before this, at no cost to them: they read the same list.
+ */
 export function readyProviders(settings: BillingSettings): ProviderOption[] {
   const options: ProviderOption[] = [];
-  if (settings.cbe_enabled && settings.cbe_account_number?.trim()) {
-    options.push({
-      provider: 'CBE',
-      label: 'Commercial Bank of Ethiopia',
-      accountNumber: settings.cbe_account_number.trim(),
-      accountName: settings.cbe_account_name,
-    });
-  }
   if (settings.telebirr_enabled && settings.telebirr_phone?.trim()) {
     options.push({
       provider: 'TELEBIRR',
@@ -202,7 +208,35 @@ export function readyProviders(settings: BillingSettings): ProviderOption[] {
       accountName: settings.telebirr_account_name,
     });
   }
+  if (settings.cbe_enabled && settings.cbe_account_number?.trim()) {
+    options.push({
+      provider: 'CBE',
+      label: 'Commercial Bank of Ethiopia',
+      accountNumber: settings.cbe_account_number.trim(),
+      accountName: settings.cbe_account_name,
+    });
+  }
   return options;
+}
+
+/**
+ * The billing cycles currently on offer, in the order they are shown.
+ *
+ * Used to decide what to DISPLAY, and deliberately never to reject a
+ * submission. A gym pays us by bank transfer and only then pastes the
+ * reference, so refusing a cycle at that point would turn "we stopped selling
+ * monthly" into "your money is gone and we will not honour it" — for exactly
+ * the people who could not have known, the ones on an Android build that still
+ * shows the monthly button. The toggle governs the offer; the receipt governs
+ * what we owe.
+ *
+ * The CHECK constraint guarantees at least one is on, so this is never empty.
+ */
+export function enabledCycles(settings: BillingSettings): BillingCycle[] {
+  const cycles: BillingCycle[] = [];
+  if (settings.monthly_enabled) cycles.push('MONTHLY');
+  if (settings.yearly_enabled) cycles.push('YEARLY');
+  return cycles;
 }
 
 export async function checkout(gymId: number): Promise<Checkout> {
@@ -227,6 +261,10 @@ export async function checkout(gymId: number): Promise<Checkout> {
     currency: settings.currency,
     instructions: settings.instructions,
     providers,
+    // New field. An Android build shipped before this simply does not read it
+    // and goes on showing both cycles — which is the intended fallback, not an
+    // oversight: see enabledCycles.
+    cycles: enabledCycles(settings),
     configured: providers.length > 0 && verification.isConfigured(),
     graceDays: settings.grace_days,
   };

@@ -35,8 +35,11 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.list = list;
 exports.summary = summary;
+exports.amend = amend;
 const paymentModel = __importStar(require("../models/paymentModel"));
+const paymentService = __importStar(require("../services/paymentService"));
 const pagination_1 = require("../utils/pagination");
+const errors_1 = require("../utils/errors");
 /** The filter both the list and the summary read, parsed once. */
 function paymentFilter(req) {
     return {
@@ -59,5 +62,26 @@ async function list(req, res) {
  */
 async function summary(req, res) {
     res.json(await paymentModel.summary(req.auth.gymId, paymentFilter(req)));
+}
+/**
+ * Correct or remove a payment. Owner-only (see the route) — staff record
+ * money, only the person answerable for the books rewrites the record of it.
+ *
+ * `replacement` absent means "this payment should not exist at all": the row
+ * is voided with nothing put in its place.
+ */
+async function amend(req, res) {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id))
+        throw (0, errors_1.notFound)('Payment not found');
+    const { reason, replacement } = req.body;
+    const result = await paymentService.amend({
+        gymId: req.auth.gymId,
+        paymentId: id,
+        userId: req.auth.sub,
+        reason,
+        replacement,
+    });
+    res.json({ ok: true, ...result });
 }
 //# sourceMappingURL=paymentController.js.map

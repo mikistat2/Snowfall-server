@@ -55,6 +55,8 @@ const PUBLIC_COLUMNS = [
 // ------------------------------------------------------------- settings ----
 const SETTINGS_DEFAULTS = {
     payments_required: false,
+    monthly_enabled: true,
+    yearly_enabled: true,
     cbe_enabled: true,
     cbe_account_number: null,
     cbe_account_name: null,

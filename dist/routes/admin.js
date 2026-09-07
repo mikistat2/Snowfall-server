@@ -137,6 +137,12 @@ exports.adminRouter.get('/billing/settings', auth_1.requirePlatformOwner, (0, as
 exports.adminRouter.put('/billing/settings', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z
     .object({
     payments_required: zod_1.z.boolean(),
+    // Which cycles we sell. Refusing to turn BOTH off cannot be checked
+    // here — this is a patch, so a request may carry only one of them and
+    // the answer depends on the stored value of the other. The controller
+    // decides against the merged state; the DB's CHECK is the backstop.
+    monthly_enabled: zod_1.z.boolean(),
+    yearly_enabled: zod_1.z.boolean(),
     cbe_enabled: zod_1.z.boolean(),
     cbe_account_number: zod_1.z.string().max(64).nullable(),
     cbe_account_name: zod_1.z.string().max(200).nullable(),

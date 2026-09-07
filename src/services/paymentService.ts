@@ -122,3 +122,119 @@ export async function renew(input: {
 
   return { paymentId: result.payment.id, expiresAt: result.expiresAt, status: result.status };
 }
+
+/**
+ * Correct a payment that was written down wrong — the gym owner's remedy for
+ * "we meant 2300 and typed 23002300".
+ *
+ * Never an in-place edit. The wrong row is voided (struck through, kept,
+ * stamped with who and why) and, unless the caller is deleting the record
+ * outright, a replacement row is inserted pointing back at it. Both acts share
+ * one transaction, so the ledger is never briefly missing a payment that is
+ * about to be replaced.
+ *
+ * The replacement inherits the original's `created_at`, not today's. The money
+ * moved when it moved; a correction typed in September for a June payment
+ * belongs in June's takings, or fixing a typo would quietly restate two months
+ * of revenue. When the correction was *entered* is in `audit_logs`.
+ *
+ * What this deliberately does NOT do is move the member's expiry date. The
+ * amount never fed into it — `renew` computes the new expiry from the plan's
+ * duration alone — so for the case this exists to fix, the subscription is
+ * already correct and touching it would introduce the error. When a payment
+ * was recorded against the wrong member entirely, that member's period is
+ * corrected on the member screen, which is a separate, deliberate act.
+ */
+export async function amend(input: {
+  gymId: number;
+  paymentId: number;
+  userId: number;
+  reason: string;
+  /** Omitted → void with no replacement (the payment should not exist at all). */
+  replacement?: { amount: number; method: PaymentMethod; note?: string | null };
+}): Promise<{ voidedId: number; replacementId: number | null }> {
+  const original = await paymentModel.findById(input.gymId, input.paymentId);
+  if (!original) throw notFound('Payment not found');
+  if (original.voided_at) throw badRequest('That payment has already been corrected');
+
+  const result = await db.transaction(async (trx) => {
+    // Guarded by `voided_at IS NULL` inside the model, so two owners clicking
+    // at once produce one void and one refusal rather than two corrections.
+    const struck = await paymentModel.markVoided(
+      input.gymId,
+      input.paymentId,
+      input.userId,
+      input.reason,
+      trx,
+    );
+    if (!struck) throw badRequest('That payment has already been corrected');
+
+    let replacement: { id: number } | null = null;
+    if (input.replacement) {
+      replacement = await paymentModel.create(
+        {
+          gym_id: input.gymId,
+          // Copied from the original, never from the request: a correction
+          // changes what was written about a payment, not which member it
+          // belonged to or which subscription it paid for. Letting the caller
+          // supply these would turn "fix the amount" into a way to move money
+          // between members.
+          member_id: original.member_id,
+          subscription_id: original.subscription_id,
+          created_at: original.created_at,
+          amount: input.replacement.amount,
+          method: input.replacement.method,
+          note: input.replacement.note ?? original.note,
+          marked_by: input.userId,
+          corrects_id: original.id,
+        },
+        trx,
+      );
+    }
+
+    await auditLogModel.log(
+      {
+        gym_id: input.gymId,
+        user_id: input.userId,
+        action: replacement ? 'payment.corrected' : 'payment.voided',
+        entity: 'payment',
+        entity_id: original.id,
+        meta: {
+          member_id: original.member_id,
+          reason: input.reason,
+          // The old values live here as well as on the voided row, so the log
+          // answers "what did this change" without a second lookup.
+          was: { amount: original.amount, method: original.method, note: original.note },
+          now: replacement
+            ? { amount: input.replacement!.amount, method: input.replacement!.method }
+            : null,
+          replacement_id: replacement?.id ?? null,
+        },
+      },
+      trx,
+    );
+
+    return { voidedId: original.id, replacementId: replacement?.id ?? null };
+  });
+
+  // The dashboard's takings tile is now wrong on every open screen, so tell
+  // them rather than waiting for the next poll. Best effort: the correction is
+  // already committed and a socket failure must not undo it.
+  try {
+    const member = await memberModel.findById(input.gymId, original.member_id);
+    const event = await eventModel.create({
+      gym_id: input.gymId,
+      type: 'payment',
+      severity: 'yellow',
+      message: result.replacementId
+        ? `Payment corrected — ${member?.full_name ?? 'member'}: ${Number(original.amount).toLocaleString()} → ${Number(input.replacement!.amount).toLocaleString()} ETB`
+        : `Payment removed — ${member?.full_name ?? 'member'}: ${Number(original.amount).toLocaleString()} ETB`,
+      member_id: original.member_id,
+    });
+    emitToGym(input.gymId, 'event:new', event);
+  } catch (err) {
+    console.warn('[payments] amend broadcast failed:', err);
+  }
+
+  return result;
+}

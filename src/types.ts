@@ -141,6 +141,9 @@ export interface BillingPlanRow {
 
 export interface BillingSettings {
   payments_required: boolean;
+  /** Which billing cycles are on offer. Never used to refuse a payment. */
+  monthly_enabled: boolean;
+  yearly_enabled: boolean;
   cbe_enabled: boolean;
   cbe_account_number: string | null;
   cbe_account_name: string | null;

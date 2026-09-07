@@ -6,7 +6,7 @@ import * as verification from '../services/verificationService';
 import * as gymModel from '../models/gymModel';
 import * as platformAlert from '../services/platformAlertService';
 import { badRequest, conflict, notFound } from '../utils/errors';
-import type { BillingCycle, BillingProvider, BillingStatus } from '../types';
+import type { BillingCycle, BillingProvider, BillingSettings, BillingStatus } from '../types';
 
 /**
  * Platform-owner control over subscription billing: the master switch, the
@@ -29,7 +29,23 @@ export async function getSettings(_req: Request, res: Response): Promise<void> {
 }
 
 export async function updateSettings(req: Request, res: Response): Promise<void> {
-  const patch = req.body as Record<string, unknown>;
+  const patch = req.body as Partial<BillingSettings> & Record<string, unknown>;
+
+  // A patch may carry one cycle flag and not the other, so "are both off?" is
+  // only answerable against what is already stored. Checked here rather than
+  // left to the CHECK constraint so the panel gets a sentence instead of a
+  // Postgres error — the constraint stays as the backstop.
+  if (patch.monthly_enabled !== undefined || patch.yearly_enabled !== undefined) {
+    const current = await billingModel.getSettings();
+    const monthly = patch.monthly_enabled ?? current.monthly_enabled;
+    const yearly = patch.yearly_enabled ?? current.yearly_enabled;
+    if (!monthly && !yearly) {
+      throw badRequest(
+        'At least one billing cycle must stay on sale. With both off there is nothing for a gym to buy.',
+      );
+    }
+  }
+
   const updated = await billingModel.updateSettings(patch);
   res.json({
     ...updated,

@@ -130,7 +130,11 @@ async function removeStaff(req, res) {
         throw (0, errors_1.notFound)('User not found');
     if (target.role === 'owner')
         throw (0, errors_1.badRequest)('Owner accounts cannot be deleted');
-    await userModel.softDelete(req.auth.gymId, id, `${req.auth.name} (gym owner)`);
+    // 'last-owner' cannot come back here — owner accounts are refused above —
+    // so the only other outcome is a double-click, which is already done.
+    const outcome = await userModel.softDelete(req.auth.gymId, id, `${req.auth.name} (gym owner)`);
+    if (outcome !== 'removed')
+        throw (0, errors_1.conflict)('That account has already been removed');
     // The old hard delete cascaded refresh_tokens away; a tombstone does not, so
     // the sessions have to be ended explicitly or the account stays signed in.
     await refreshTokenModel.revokeAllForUser(id);

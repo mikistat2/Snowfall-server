@@ -150,14 +150,17 @@ async function today(req, res) {
         knex_1.db.raw(`
       SELECT
         (SELECT count(*)::int FROM payments
-          WHERE gym_id = :gymId AND created_at >= :start)                    AS count,
+          WHERE gym_id = :gymId AND created_at >= :start
+            AND voided_at IS NULL)                                           AS count,
         (SELECT coalesce(sum(amount), 0) FROM payments
-          WHERE gym_id = :gymId AND created_at >= :start)                    AS total,
+          WHERE gym_id = :gymId AND created_at >= :start
+            AND voided_at IS NULL)                                           AS total,
         coalesce((
           SELECT json_agg(r) FROM (
             SELECT p.id, p.amount, p.method, p.created_at, m.full_name AS member_name
             FROM payments p JOIN members m ON m.id = p.member_id
             WHERE p.gym_id = :gymId AND p.created_at >= :start
+              AND p.voided_at IS NULL
             ORDER BY p.created_at DESC
             LIMIT :limit
           ) r

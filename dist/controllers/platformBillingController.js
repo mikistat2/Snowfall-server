@@ -70,6 +70,18 @@ async function getSettings(_req, res) {
 }
 async function updateSettings(req, res) {
     const patch = req.body;
+    // A patch may carry one cycle flag and not the other, so "are both off?" is
+    // only answerable against what is already stored. Checked here rather than
+    // left to the CHECK constraint so the panel gets a sentence instead of a
+    // Postgres error — the constraint stays as the backstop.
+    if (patch.monthly_enabled !== undefined || patch.yearly_enabled !== undefined) {
+        const current = await billingModel.getSettings();
+        const monthly = patch.monthly_enabled ?? current.monthly_enabled;
+        const yearly = patch.yearly_enabled ?? current.yearly_enabled;
+        if (!monthly && !yearly) {
+            throw (0, errors_1.badRequest)('At least one billing cycle must stay on sale. With both off there is nothing for a gym to buy.');
+        }
+    }
     const updated = await billingModel.updateSettings(patch);
     res.json({
         ...updated,

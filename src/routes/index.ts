@@ -21,6 +21,7 @@ import * as features from '../controllers/featureController';
 import * as auditLogModel from '../models/auditLogModel';
 import * as platformModel from '../models/platformModel';
 import * as billingModel from '../models/billingModel';
+import * as billingService from '../services/billingService';
 import { cameraProxy } from '../controllers/cameraProxyController';
 import * as feedback from '../controllers/feedbackController';
 
@@ -276,21 +277,35 @@ const receiptUpload = multer({
 api.get(
   '/auth/registration-mode',
   asyncHandler(async (_req, res) => {
-    const [{ trial_mode, trial_days }, plans] = await Promise.all([
+    const [{ trial_mode, trial_days }, plans, billing] = await Promise.all([
       platformModel.getSettings(),
       billingModel.listPlans(),
+      billingModel.getSettings(),
     ]);
+    const cycles = billingService.enabledCycles(billing);
     res.json({
       trial_mode,
       trial_days,
+      /**
+       * Which cycles the registration page may offer. A client that predates
+       * this field ignores it and shows both, which is what it did before.
+       */
+      cycles,
       /**
        * Prices and contents only — deliberately no internal columns. This is
        * an unauthenticated endpoint, and the free tier is filtered out because
        * it is not something a gym can choose: it is where a gym sits before it
        * pays, and resolveCycle refuses a zero price anyway.
+       *
+       * "Free" is judged against the cycles actually on sale, not against
+       * monthly alone. A platform that stops selling monthly is likely to zero
+       * the monthly prices next, and keying the filter to that column would
+       * then empty the registration page of every package it still sells.
        */
       plans: plans
-        .filter((p) => Number(p.monthly_price) > 0)
+        .filter((p) =>
+          cycles.some((c) => Number(c === 'MONTHLY' ? p.monthly_price : p.yearly_price) > 0),
+        )
         .map((p) => ({
           id: p.id,
           name: p.name,
@@ -456,6 +471,30 @@ api.get('/payments', asyncHandler(payments.list));
 // Before /payments/:id would be, if one is ever added — a literal path must
 // win over a parameter.
 api.get('/payments/summary', asyncHandler(payments.summary));
+/**
+ * Correct or remove a payment. Owner-only: staff take the money, only the
+ * person answerable for the books rewrites the record of it.
+ *
+ * POST, not PUT or DELETE, because nothing is updated or removed — the wrong
+ * row is voided and a replacement appended. `replacement` omitted means the
+ * payment should not exist at all, and nothing takes its place.
+ */
+api.post(
+  '/payments/:id/amend',
+  requireOwner,
+  validate(
+    z.object({
+      // Required, and non-empty: the database refuses a void without one. A
+      // struck-through payment with no explanation is a worse record than the
+      // wrong number it replaced.
+      reason: z.string().min(1).max(1000),
+      replacement: z
+        .object({ amount: paymentAmount, method: paymentMethod, note: z.string().nullable().optional() })
+        .optional(),
+    }),
+  ),
+  asyncHandler(payments.amend),
+);
 api.get('/dashboard/stats', asyncHandler(dashboard.stats));
 api.get('/dashboard/today', asyncHandler(dashboard.today));
 

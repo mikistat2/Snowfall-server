@@ -403,17 +403,20 @@ async function deleteStaff(req, res) {
         throw (0, errors_1.notFound)('Staff account not found in this gym');
     if (target.deleted_at)
         throw (0, errors_1.conflict)('That account has already been removed');
+    const { note } = req.body;
+    // The last-owner rule is enforced inside this call rather than by a check
+    // out here, so it holds under concurrency — see the note on softDelete. Both
+    // refusals below are therefore about state as of the write, not as of a read
+    // that has already gone stale.
+    const outcome = await userModel.softDelete(gymId, userId, actorLabel(req));
     // A gym with no live owner is unusable and unrecoverable from the tenant
     // side: nobody can sign in, nobody can create staff, and every owner alert
     // has no recipient. Closing a whole gym is what `DELETE /gyms/:id` is for.
-    if (target.role === 'owner' && (await userModel.countLiveOwners(gymId)) <= 1) {
+    if (outcome === 'last-owner') {
         throw (0, errors_1.forbidden)(`${target.name} is the only owner account of "${gym.name}". Removing it would leave the gym with ` +
             'nobody who can sign in. Add a second owner first, or delete the gym itself.');
     }
-    const { note } = req.body;
-    const removed = await userModel.softDelete(gymId, userId, actorLabel(req));
-    // 0 rows means another request won the race between the read above and here.
-    if (!removed)
+    if (outcome === 'already-removed')
         throw (0, errors_1.conflict)('That account has already been removed');
     // The tombstone alone would leave them signed in: revoking is what actually
     // ends the session (blockFrozenGym closes the access-token window).
@@ -454,14 +457,19 @@ async function restoreStaff(req, res) {
     if (!target.deleted_at)
         throw (0, errors_1.conflict)('That account is already active');
     // The partial unique index only covers live rows, so the address may have
-    // been handed to somebody else while this one was removed. Checked here so
-    // the answer is a sentence rather than a unique-violation 500.
+    // been handed to somebody else while this one was removed. Asked first, to
+    // name the account in the way; the index itself is what decides, and restore
+    // reports that back as 'email-taken' if it is claimed in between.
     const clash = await userModel.findByEmail(target.email);
     if (clash) {
         throw (0, errors_1.conflict)(`${target.email} now belongs to another active account (${clash.name}). ` +
             'Change or remove that account before restoring this one.');
     }
-    if (!(await userModel.restore(gymId, userId)))
+    const outcome = await userModel.restore(gymId, userId);
+    if (outcome === 'email-taken') {
+        throw (0, errors_1.conflict)(`${target.email} was just claimed by another account. Restore is not possible.`);
+    }
+    if (outcome === 'already-active')
         throw (0, errors_1.conflict)('That account is already active');
     await auditLogModel.log({
         gym_id: gymId,

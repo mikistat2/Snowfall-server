@@ -51,9 +51,11 @@ export async function overview(): Promise<PlatformOverview> {
       (SELECT count(*)::int FROM users WHERE deleted_at IS NULL)                    AS total_staff,
       (SELECT count(*)::int FROM check_ins
         WHERE checked_in_at > now() - interval '7 days')                           AS checkins_7d,
-      (SELECT COALESCE(sum(amount), 0)::text FROM payments)                        AS revenue_total,
       (SELECT COALESCE(sum(amount), 0)::text FROM payments
-        WHERE created_at > now() - interval '30 days')                             AS revenue_30d
+        WHERE voided_at IS NULL)                                                 AS revenue_total,
+      (SELECT COALESCE(sum(amount), 0)::text FROM payments
+        WHERE created_at > now() - interval '30 days'
+          AND voided_at IS NULL)                                                 AS revenue_30d
   `);
   return rows[0];
 }
@@ -128,9 +130,11 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
       (SELECT count(*)::int FROM members m WHERE m.gym_id = g.id)                     AS member_count,
       (SELECT count(*)::int FROM members m
         WHERE m.gym_id = g.id AND m.status IN ('active', 'expiring', 'grace'))        AS active_member_count,
-      (SELECT COALESCE(sum(p.amount), 0)::text FROM payments p WHERE p.gym_id = g.id) AS revenue_total,
       (SELECT COALESCE(sum(p.amount), 0)::text FROM payments p
-        WHERE p.gym_id = g.id AND p.created_at > now() - interval '30 days')          AS revenue_30d,
+        WHERE p.gym_id = g.id AND p.voided_at IS NULL)                                AS revenue_total,
+      (SELECT COALESCE(sum(p.amount), 0)::text FROM payments p
+        WHERE p.gym_id = g.id AND p.created_at > now() - interval '30 days'
+          AND p.voided_at IS NULL)                                                    AS revenue_30d,
       (SELECT max(c.checked_in_at) FROM check_ins c WHERE c.gym_id = g.id)            AS last_checkin_at
     FROM gyms g
     LEFT JOIN LATERAL (
