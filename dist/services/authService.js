@@ -50,10 +50,34 @@ const billingModel = __importStar(require("../models/billingModel"));
 const platformAlert = __importStar(require("./platformAlertService"));
 const jwt_1 = require("../utils/jwt");
 const errors_1 = require("../utils/errors");
+/**
+ * What a gym is allowed to use before it has paid for anything.
+ *
+ * Telegram but not the camera — the "Regular + Telegram" package. The camera
+ * is not a switch we can honestly flip on signup: it needs an on-site install
+ * and carries a setup fee, so a trial that turned it on would be advertising
+ * something nobody can actually use that day. Telegram costs nothing to grant
+ * and is the half of the product a gym can try on its own.
+ *
+ * The package they CHOSE is still recorded on the gym, so the panel shows what
+ * they came for and a verified payment grants the rest (see billingService's
+ * grantsFor, which is grant-only and will only ever add to this).
+ *
+ * Applies to gyms created from here on. Existing gyms keep both features —
+ * they were created under a `DEFAULT true` and nothing here touches them.
+ */
+const UNPAID_ENTITLEMENTS = { camera_allowed: false, telegram_allowed: true };
 async function registerGym(input) {
     const existing = await userModel.findByEmail(input.owner.email);
     if (existing)
         throw (0, errors_1.conflict)('An account with this email already exists');
+    // Checked rather than trusted: the id arrives from an unauthenticated form,
+    // and a retired plan must not be signed up for just because a stale tab
+    // still offers it.
+    const plan = input.planId ? await billingModel.findPlan(input.planId) : null;
+    if (input.planId && (!plan || !plan.is_active)) {
+        throw (0, errors_1.badRequest)('That package is no longer available. Please pick another.');
+    }
     const passwordHash = await bcryptjs_1.default.hash(input.owner.password, 10);
     // Free-trial mode (set by the platform admin): the gym starts immediately
     // on a limited trial. Otherwise it waits as 'pending' until approved.
@@ -76,7 +100,16 @@ async function registerGym(input) {
     const billing = await billingModel.getSettings();
     const comped = !billing.payments_required;
     const { gym, user } = await knex_1.db.transaction(async (trx) => {
-        const gym = await gymModel.create({ ...input.gym, ...trialFields, comped }, trx);
+        const gym = await gymModel.create({
+            ...input.gym,
+            ...trialFields,
+            comped,
+            billing_plan_id: plan?.id ?? null,
+            // Only meaningful alongside a plan — a cycle with nothing to bill is
+            // not an intention, it is a stray field.
+            billing_cycle: plan ? (input.cycle ?? 'MONTHLY') : null,
+            ...UNPAID_ENTITLEMENTS,
+        }, trx);
         const user = await userModel.create({
             gym_id: gym.id,
             name: input.owner.name,
@@ -113,7 +146,7 @@ async function login(email, password) {
     if (!gym)
         throw (0, errors_1.unauthorized)('Gym not found');
     if (gym.status === 'frozen') {
-        throw (0, errors_1.forbidden)('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+        throw (0, errors_1.forbidden)(gymModel.frozenMessage(gym), 'GYM_FROZEN');
     }
     if (gym.status === 'pending') {
         throw (0, errors_1.forbidden)('Your registration is still awaiting approval by the platform admin. You will be notified by email once it is approved.', 'GYM_PENDING');
@@ -136,7 +169,7 @@ async function refresh(refreshToken) {
     if (!gym)
         throw (0, errors_1.unauthorized)('Gym not found');
     if (gym.status === 'frozen') {
-        throw (0, errors_1.forbidden)('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+        throw (0, errors_1.forbidden)(gymModel.frozenMessage(gym), 'GYM_FROZEN');
     }
     if (gym.status === 'pending') {
         throw (0, errors_1.forbidden)('Your registration is still awaiting approval by the platform admin. You will be notified by email once it is approved.', 'GYM_PENDING');

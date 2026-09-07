@@ -200,7 +200,15 @@ export async function listAll(filter: AttemptFilter = {}): Promise<AttemptPage> 
     .join('gyms as g', 'g.id', 'bp.gym_id')
     .leftJoin('billing_plans as pl', 'pl.id', 'bp.billing_plan_id')
     .leftJoin(
-      db('users').select('gym_id').min('email as email').where({ role: 'owner' }).groupBy('gym_id').as('o'),
+      // Removed owners excluded: this column is the gym's contact address on
+      // the payments screen, and a closed account is not who to chase.
+      db('users')
+        .select('gym_id')
+        .min('email as email')
+        .where({ role: 'owner' })
+        .whereNull('deleted_at')
+        .groupBy('gym_id')
+        .as('o'),
       'o.gym_id',
       'g.id',
     );

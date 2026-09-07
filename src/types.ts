@@ -195,6 +195,10 @@ export interface UserRow {
   role: 'owner' | 'staff';
   telegram_chat_id: number | null;
   telegram_link_token: string | null;
+  /** Set when the account is removed; the row survives so payments.marked_by still resolves. */
+  deleted_at: Date | null;
+  /** Who removed it — 'Platform Owner', a sub-admin's name, or the gym owner's. */
+  deleted_by: string | null;
 }
 
 export interface PlanRow {

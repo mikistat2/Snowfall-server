@@ -9,9 +9,12 @@ exports.setStatus = setStatus;
 exports.setNote = setNote;
 exports.approveGym = approveGym;
 exports.renewGym = renewGym;
+exports.setTrial = setTrial;
 exports.revokeGymSessions = revokeGymSessions;
 exports.deleteGym = deleteGym;
+exports.claimDailyRun = claimDailyRun;
 const knex_1 = require("../db/knex");
+const billingChecks_1 = require("../services/billingChecks");
 /**
  * Cross-tenant queries for the platform super-admin. Nothing here is reachable
  * by gym accounts — the /admin routes are guarded by requirePlatformAdmin.
@@ -39,7 +42,7 @@ async function overview() {
         WHERE status = 'active' AND subscription_ends_at < now())                  AS expired_subs,
       (SELECT count(*)::int FROM gyms WHERE created_at > now() - interval '30 days') AS new_gyms_30d,
       (SELECT count(*)::int FROM members)                                          AS total_members,
-      (SELECT count(*)::int FROM users)                                            AS total_staff,
+      (SELECT count(*)::int FROM users WHERE deleted_at IS NULL)                    AS total_staff,
       (SELECT count(*)::int FROM check_ins
         WHERE checked_in_at > now() - interval '7 days')                           AS checkins_7d,
       (SELECT COALESCE(sum(amount), 0)::text FROM payments)                        AS revenue_total,
@@ -58,13 +61,20 @@ async function listGyms(search) {
     }
     const { rows } = await knex_1.db.raw(`
     SELECT
-      g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note,
+      g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note, g.freeze_note,
       g.approved_at, g.subscription_ends_at, g.is_trial, g.comped, g.created_at,
-      g.camera_allowed, g.telegram_allowed,
+      g.camera_allowed, g.telegram_allowed, g.billing_cycle,
+      -- The package the gym last paid for, and what that package includes, so
+      -- the panel can show both the plan and where a gym's switches disagree
+      -- with it. LEFT: a gym that has never paid has no plan and must still list.
+      pl.name     AS plan_name,
+      pl.camera   AS plan_camera,
+      pl.telegram AS plan_telegram,
       o.name  AS owner_name,
       o.email AS owner_email,
       o.phone AS owner_phone,
-      (SELECT count(*)::int FROM users u WHERE u.gym_id = g.id)                       AS staff_count,
+      (SELECT count(*)::int FROM users u
+        WHERE u.gym_id = g.id AND u.deleted_at IS NULL)                               AS staff_count,
       (SELECT count(*)::int FROM members m WHERE m.gym_id = g.id)                     AS member_count,
       (SELECT count(*)::int FROM members m
         WHERE m.gym_id = g.id AND m.status IN ('active', 'expiring', 'grace'))        AS active_member_count,
@@ -75,42 +85,59 @@ async function listGyms(search) {
     FROM gyms g
     LEFT JOIN LATERAL (
       SELECT u.name, u.email, u.phone FROM users u
-      WHERE u.gym_id = g.id AND u.role = 'owner'
+      WHERE u.gym_id = g.id AND u.role = 'owner' AND u.deleted_at IS NULL
       ORDER BY u.id ASC LIMIT 1
     ) o ON TRUE
+    LEFT JOIN billing_plans pl ON pl.id = g.billing_plan_id
     ${where}
     ORDER BY g.created_at DESC
   `, params);
     return rows;
 }
+/**
+ * Every staff row of one gym, removed ones included and sorted last.
+ *
+ * Deliberately unfiltered, unlike userModel.listByGym: this is the only screen
+ * that can restore an account, and it cannot restore what it cannot see.
+ */
 async function gymStaff(gymId) {
     return (0, knex_1.db)('users')
         .where({ gym_id: gymId })
-        .select('id', 'name', 'email', 'phone', 'role', 'created_at')
-        .orderBy('id');
+        .select('id', 'name', 'email', 'phone', 'role', 'created_at', 'deleted_at', 'deleted_by')
+        .orderByRaw('(deleted_at IS NOT NULL), id');
 }
 async function setStatus(gymId, status, note) {
-    const patch = {
+    await (0, knex_1.db)('gyms')
+        .where({ id: gymId })
+        .update({
         status,
-        frozen_at: status === 'frozen' ? knex_1.db.fn.now() : null,
-    };
-    if (note !== undefined)
-        patch.admin_note = note;
-    await (0, knex_1.db)('gyms').where({ id: gymId }).update(patch);
+        // COALESCE, not now(): re-saving the reason on an already-frozen gym must
+        // not reset the clock, or the panel would report it as freshly frozen.
+        frozen_at: status === 'frozen' ? knex_1.db.raw('COALESCE(frozen_at, now())') : null,
+        // Cleared on unfreeze so a later freeze with no reason cannot resurface
+        // the previous one. This is the owner-facing reason, never `admin_note`,
+        // which stays private to the platform panel.
+        freeze_note: status === 'frozen' ? (note?.trim() || null) : null,
+    });
 }
 async function setNote(gymId, note) {
     await (0, knex_1.db)('gyms').where({ id: gymId }).update({ admin_note: note });
 }
 /** Approve a pending registration: active + paid year starting now. */
-async function approveGym(gymId) {
-    const ends = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+async function approveGym(gymId, cycle = 'YEARLY') {
+    // computePeriod rather than +365 days: it is the same month arithmetic every
+    // renewal already uses, so an approved month lands on the same day next
+    // month rather than 30 days later. `null` starts the period today, which is
+    // what approval means — there is no earlier time to stack onto.
+    const { end } = (0, billingChecks_1.computePeriod)(null, cycle);
     await (0, knex_1.db)('gyms').where({ id: gymId }).update({
         status: 'active',
         approved_at: knex_1.db.fn.now(),
-        subscription_ends_at: ends,
+        subscription_ends_at: end,
+        billing_cycle: cycle,
         is_trial: false,
     });
-    return ends;
+    return end;
 }
 /**
  * Extend the subscription by one month or one year.
@@ -134,6 +161,34 @@ async function renewGym(gymId, cycle = 'YEARLY', fromNow = false) {
   `, [gymId]);
     return rows[0].subscription_ends_at;
 }
+/**
+ * Put a gym (back) onto a free trial of `days`.
+ *
+ * The inverse of renewGym, and the reason it exists: renewGym sets
+ * `is_trial = FALSE` and pushes the end date out, so an accidental "Extend
+ * free" was previously unfixable from the panel — the only route back was
+ * hand-written SQL against production.
+ *
+ * `comped` is cleared deliberately. A comped gym passes hasAccess() forever,
+ * so leaving it set would produce a "trial" with an end date that never
+ * actually arrives — the most misleading possible state to leave behind.
+ *
+ * The end date is set FROM NOW rather than extended: this is a correction,
+ * and adding 30 days to a year that was granted by mistake would preserve
+ * exactly the mistake being corrected.
+ */
+async function setTrial(gymId, days) {
+    const { rows } = await knex_1.db.raw(`
+    UPDATE gyms
+      SET subscription_ends_at = now() + (? * interval '1 day'),
+          is_trial = TRUE,
+          comped = FALSE,
+          approved_at = COALESCE(approved_at, now())
+      WHERE id = ?
+      RETURNING subscription_ends_at
+  `, [days, gymId]);
+    return rows[0].subscription_ends_at;
+}
 /** Revoke every refresh token of a gym's staff — used when freezing. */
 async function revokeGymSessions(gymId) {
     await (0, knex_1.db)('refresh_tokens')
@@ -152,5 +207,30 @@ async function deleteGym(gymId) {
         await trx('gyms').where({ id: gymId }).delete();
         await trx.raw('ALTER TABLE payments ENABLE TRIGGER payments_immutable');
     });
+}
+/**
+ * Claims today for the daily batch, returning false if it is already taken.
+ *
+ * The batch has three possible triggers now — the 09:00 cron, the external
+ * scheduler's HTTP ping, and a manual call — and several of the things it does
+ * (the platform digest, the owner renewal emails) have no dedupe of their own,
+ * so two triggers in one day would mean two of every message.
+ *
+ * The claim is a single conditional UPDATE rather than a read-then-write:
+ * Postgres takes a row lock, so of two requests arriving together exactly one
+ * sees a row come back. A cron firing at the same moment as a retried ping is
+ * an ordinary event on a free instance, not a rare one.
+ *
+ * `current_date` is the database's day, which is UTC. That rolls over at
+ * 03:00 in Addis, well clear of any hour these jobs are scheduled for.
+ */
+async function claimDailyRun() {
+    const result = await knex_1.db.raw(`
+    UPDATE platform_settings
+      SET daily_tasks_ran_on = current_date
+      WHERE daily_tasks_ran_on IS DISTINCT FROM current_date
+      RETURNING daily_tasks_ran_on
+  `);
+    return result.rows.length > 0;
 }
 //# sourceMappingURL=platformModel.js.map

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import * as gymModel from '../models/gymModel';
 import * as userModel from '../models/userModel';
+import * as refreshTokenModel from '../models/refreshTokenModel';
 import * as auditLogModel from '../models/auditLogModel';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import { DEFAULT_SETTINGS } from '../types';
@@ -77,13 +78,28 @@ export async function createStaff(req: Request, res: Response): Promise<void> {
   res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role });
 }
 
+/**
+ * Remove a staff account (gym owner's own button).
+ *
+ * This used to DELETE the row, which meant it raised a foreign-key error for
+ * any staff member who had ever marked a payment or signed in a guest —
+ * failing hardest on the people who had done the most work. It now writes the
+ * same tombstone the platform panel does, so it works for everyone and the
+ * payment history keeps naming who took the money.
+ */
 export async function removeStaff(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   if (id === req.auth.sub) throw badRequest('You cannot delete your own account');
   const target = await userModel.findById(id);
   if (!target || target.gym_id !== req.auth.gymId) throw notFound('User not found');
   if (target.role === 'owner') throw badRequest('Owner accounts cannot be deleted');
-  await userModel.remove(req.auth.gymId, id);
+  // 'last-owner' cannot come back here — owner accounts are refused above —
+  // so the only other outcome is a double-click, which is already done.
+  const outcome = await userModel.softDelete(req.auth.gymId, id, `${req.auth.name} (gym owner)`);
+  if (outcome !== 'removed') throw conflict('That account has already been removed');
+  // The old hard delete cascaded refresh_tokens away; a tombstone does not, so
+  // the sessions have to be ended explicitly or the account stays signed in.
+  await refreshTokenModel.revokeAllForUser(id);
   await auditLogModel.log({
     gym_id: req.auth.gymId,
     user_id: req.auth.sub,

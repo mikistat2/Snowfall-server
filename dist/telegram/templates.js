@@ -8,6 +8,9 @@ exports.NUDGE_COUNT = void 0;
 exports.linkedWelcome = linkedWelcome;
 exports.adminLinkedWelcome = adminLinkedWelcome;
 exports.expiryReminder = expiryReminder;
+exports.daysLeftReply = daysLeftReply;
+exports.daysLeftNotLinked = daysLeftNotLinked;
+exports.daysLeftNoSubscription = daysLeftNoSubscription;
 exports.enteredGrace = enteredGrace;
 exports.receipt = receipt;
 exports.absenceNudge = absenceNudge;
@@ -31,6 +34,49 @@ function expiryReminder(memberName, daysLeft, gymName) {
     }
     return (`⚠️ ${memberName}, your ${gymName} membership expires today. Renew at the front desk to avoid interruption.\n` +
         `⚠️ ${memberName}፣ የ${gymName} አባልነትዎ ዛሬ ያበቃል። እባክዎ ያድሱ።`);
+}
+/**
+ * Reply to /days — the member asking, rather than us telling them.
+ *
+ * Every branch the reminders can produce has to be answerable here, because a
+ * member may ask on any day of their membership, not only on a milestone: still
+ * running, expiring today, frozen, inside the grace period, or lapsed past it.
+ * `daysLeft` is counted the same way the reminder job counts it (whole days
+ * from today to `expires_at`), so the two can never disagree by a day.
+ */
+function daysLeftReply(memberName, daysLeft, gymName, state, graceDaysLeft = 0) {
+    if (state === 'frozen') {
+        return (`❄️ ${memberName}, your ${gymName} membership is frozen with ${daysLeft} day${daysLeft === 1 ? '' : 's'} ` +
+            `saved. Ask the front desk to unfreeze when you are ready.\n` +
+            `❄️ ${memberName}፣ የ${gymName} አባልነትዎ ታግዷል፤ ${daysLeft} ቀን ተቀምጦልዎታል። ለመቀጠል የፊት ዴስክን ይጠይቁ።`);
+    }
+    if (state === 'grace') {
+        if (graceDaysLeft > 0) {
+            return (`🔔 ${memberName}, your ${gymName} membership has expired. You have ${graceDaysLeft} ` +
+                `grace day${graceDaysLeft === 1 ? '' : 's'} left — please renew at the front desk.\n` +
+                `🔔 ${memberName}፣ የ${gymName} አባልነትዎ አብቅቷል። ${graceDaysLeft} የችሮታ ቀን ቀርቶዎታል — እባክዎ ያድሱ።`);
+        }
+        return (`⚠️ ${memberName}, your ${gymName} membership has expired. Renew at the front desk to start training again.\n` +
+            `⚠️ ${memberName}፣ የ${gymName} አባልነትዎ አብቅቷል። እንደገና ለመጀመር እባክዎ ያድሱ።`);
+    }
+    if (daysLeft === 0) {
+        return (`⚠️ ${memberName}, your ${gymName} membership expires today. Renew at the front desk to avoid interruption.\n` +
+            `⚠️ ${memberName}፣ የ${gymName} አባልነትዎ ዛሬ ያበቃል። እባክዎ ያድሱ።`);
+    }
+    return (`✅ ${memberName}, you have ${daysLeft} day${daysLeft === 1 ? '' : 's'} left on your ${gymName} membership.\n` +
+        `✅ ${memberName}፣ በ${gymName} አባልነትዎ ${daysLeft} ቀን ይቀርዎታል።`);
+}
+/** /days from a chat that was never linked to a member. */
+function daysLeftNotLinked(gymName) {
+    return (`🔗 This chat is not linked to a ${gymName} membership yet. ` +
+        `Ask the front desk for your personal link.\n` +
+        `🔗 ይህ ውይይት ከ${gymName} አባልነት ጋር ገና አልተገናኘም። የፊት ዴስክን የግል ሊንክዎን ይጠይቁ።`);
+}
+/** /days from a linked member who has no subscription on file at all. */
+function daysLeftNoSubscription(memberName, gymName) {
+    return (`ℹ️ ${memberName}, you do not have an active ${gymName} membership yet. ` +
+        `Sign up at the front desk to get started.\n` +
+        `ℹ️ ${memberName}፣ በ${gymName} ንቁ አባልነት የለዎትም። ለመጀመር የፊት ዴስክን ያነጋግሩ።`);
 }
 function enteredGrace(memberName, graceDaysLeft, gymName) {
     return (`🔔 ${memberName}, your ${gymName} membership has expired. You have a ${graceDaysLeft}-day grace period — ` +

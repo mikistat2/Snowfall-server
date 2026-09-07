@@ -34,6 +34,8 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.notifyGymOwners = notifyGymOwners;
+exports.notifyFeatureChange = notifyFeatureChange;
+exports.notifyStaffRemoved = notifyStaffRemoved;
 exports.notifyPlatformAdmin = notifyPlatformAdmin;
 exports.runSubscriptionAlerts = runSubscriptionAlerts;
 exports.runOwnerRenewalReminders = runOwnerRenewalReminders;
@@ -79,7 +81,14 @@ const MESSAGES = {
 };
 async function notifyGymOwners(gymId, gymName, action, note) {
     const { subject, body } = MESSAGES[action];
-    const text = body(gymName, note?.trim() || undefined);
+    return deliver(gymId, subject, body(gymName, note?.trim() || undefined), { platform_action: action });
+}
+/**
+ * Both channels, best effort, never throwing — the platform action itself has
+ * already happened by the time this runs and must not be undone by a mail
+ * server being down.
+ */
+async function deliver(gymId, subject, text, meta) {
     const result = { telegram: false, email: false };
     // Telegram (gym's own bot → linked owner chats; also logged in
     // `notifications`, so it shows on the gym's Notifications page). For
@@ -88,7 +97,7 @@ async function notifyGymOwners(gymId, gymName, action, note) {
     try {
         const hasBot = Boolean(botManager.getBot(gymId));
         const chatIds = hasBot ? await userModel.ownerChatIds(gymId) : [];
-        await notifier.sendToOwners(gymId, 'admin_alert', text, { platform_action: action });
+        await notifier.sendToOwners(gymId, 'admin_alert', text, meta);
         result.telegram = hasBot && chatIds.length > 0;
     }
     catch (err) {
@@ -100,6 +109,7 @@ async function notifyGymOwners(gymId, gymName, action, note) {
         if (transport) {
             const owners = await (0, knex_1.db)('users')
                 .where({ gym_id: gymId, role: 'owner' })
+                .whereNull('deleted_at')
                 .select('name', 'email');
             for (const owner of owners) {
                 await transport.sendMail({
@@ -117,6 +127,80 @@ async function notifyGymOwners(gymId, gymName, action, note) {
         console.warn(`[platform-alert] email alert failed for gym ${gymId}:`, err);
     }
     return result;
+}
+/**
+ * A feature was granted or revoked for one gym.
+ *
+ * Kept out of `MESSAGES` because the wording has to name the feature and say
+ * what specifically stops working — "your account was changed" is exactly the
+ * kind of alert that gets ignored until someone phones support.
+ *
+ * For a Telegram *revocation* the caller must send this BEFORE stopping the
+ * bot, or the message has no bot left to go out through.
+ */
+async function notifyFeatureChange(gymId, gymName, feature, allowed, note) {
+    const label = feature === 'camera' ? 'Face recognition' : 'Telegram notifications';
+    const reason = note?.trim() ? `Reason: ${note.trim()}\n\n` : '';
+    const subject = `${label} ${allowed ? 'enabled' : 'turned off'} for your gym`;
+    const text = allowed
+        ? `✅ ${label} has been switched back on for "${gymName}" on Snowfall.\n\n` +
+            reason +
+            (feature === 'camera'
+                ? `Your enrolled faces were kept while it was off, so camera check-in works again straight away — ` +
+                    `re-enable it under Settings → Camera if you had switched it off yourself.\n\n`
+                : `Your saved bot token was kept, so reminders and nudges start sending again automatically.\n\n`) +
+            `Nothing else about your account has changed.`
+        : `⚠️ ${label} has been turned off for "${gymName}" on Snowfall by the platform administrator.\n\n` +
+            reason +
+            (feature === 'camera'
+                ? `What this means: the door camera and automatic face check-in stop working, and new members ` +
+                    `are enrolled without a face scan. Your gym keeps running in name-board mode — staff check ` +
+                    `members in from the members list.\n\n` +
+                    `Nothing has been deleted. Every enrolled face is kept and comes straight back if this is ` +
+                    `switched on again.\n\n`
+                : `What this means: your bot stops sending expiry reminders, absence nudges and receipts. ` +
+                    `Members will not receive Telegram messages from your gym.\n\n` +
+                    `Nothing has been deleted. Your bot token is kept and reconnects if this is switched on again.\n\n`) +
+            `To ask about this, contact the platform administrator at ${env_1.env.platformAdmin.email}.`;
+    return deliver(gymId, subject, text, { platform_action: 'feature', feature, allowed });
+}
+/**
+ * One of a gym's staff accounts was removed by the platform admin.
+ *
+ * Sent to the gym's remaining owners, not to the person removed — they get the
+ * plain refusal from the app itself the moment they try anything. The wording
+ * leads with what is NOT gone, because "we removed an account" reads as "we
+ * deleted their work", and the payments and check-ins they recorded are still
+ * there under their name.
+ *
+ * Send this AFTER the removal, never before: a removed owner is filtered out
+ * of the recipient list, and sending first would mail the news to the very
+ * account being closed.
+ */
+async function notifyStaffRemoved(gymId, gymName, staff, note) {
+    const reason = note?.trim() ? `Reason: ${note.trim()}
+
+` : '';
+    const subject = 'A staff account was removed from your gym';
+    const text = `⚠️ The ${staff.role === 'owner' ? 'owner' : 'staff'} account for ${staff.name} ` +
+        `(${staff.email}) has been removed from "${gymName}" on Snowfall by the platform administrator.
+
+` +
+        reason +
+        `They can no longer sign in, and any session they had open has been ended.
+
+` +
+        `Nothing they recorded has been deleted. Every payment they marked, guest they signed in and ` +
+        `check-in they handled stays in your records, still under their name.
+
+` +
+        `If this was a mistake the account can be restored — contact the platform administrator at ` +
+        `${env_1.env.platformAdmin.email}.`;
+    return deliver(gymId, subject, text, {
+        platform_action: 'staff_removed',
+        staff_email: staff.email,
+        staff_role: staff.role,
+    });
 }
 /** Email the platform admin (you) — new registrations, expiring subscriptions, … */
 async function notifyPlatformAdmin(subject, text) {
@@ -207,6 +291,7 @@ async function runOwnerRenewalReminders() {
                 continue;
             const owners = await (0, knex_1.db)('users')
                 .where({ gym_id: gym.id, role: 'owner' })
+                .whereNull('deleted_at')
                 .select('name', 'email');
             for (const owner of owners) {
                 await transport.sendMail({

@@ -8,6 +8,7 @@ exports.getSettings = getSettings;
 exports.setFeatures = setFeatures;
 exports.listAll = listAll;
 exports.setComped = setComped;
+exports.frozenMessage = frozenMessage;
 const knex_1 = require("../db/knex");
 const types_1 = require("../types");
 async function findById(id, trx = knex_1.db) {
@@ -60,5 +61,25 @@ async function listAll() {
 /** Permanent exemption from the subscription paywall (see billingService.hasAccess). */
 async function setComped(id, comped) {
     await (0, knex_1.db)('gyms').where({ id }).update({ comped });
+}
+/**
+ * The 403 body a frozen gym's owner actually reads.
+ *
+ * Three call sites reject a frozen gym — login, refresh and every
+ * authenticated request — and each has to carry the admin's reason, or the
+ * owner sees a different story depending on which one fired first. Built here
+ * so they cannot drift.
+ *
+ * The reason is the whole point: the freeze alert used to travel only by
+ * Telegram and email, both best effort, so an owner with no linked chat and a
+ * bounced email was locked out with no explanation at all.
+ */
+function frozenMessage(gym) {
+    const note = gym.freeze_note?.trim();
+    if (!note)
+        return 'This gym account has been frozen by the platform. Please contact support.';
+    return ('This gym account has been frozen by the platform.\n\n' +
+        `Reason: ${note}\n\n` +
+        'Contact the platform administrator to restore access.');
 }
 //# sourceMappingURL=gymModel.js.map

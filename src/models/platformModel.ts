@@ -48,7 +48,7 @@ export async function overview(): Promise<PlatformOverview> {
         WHERE status = 'active' AND subscription_ends_at < now())                  AS expired_subs,
       (SELECT count(*)::int FROM gyms WHERE created_at > now() - interval '30 days') AS new_gyms_30d,
       (SELECT count(*)::int FROM members)                                          AS total_members,
-      (SELECT count(*)::int FROM users)                                            AS total_staff,
+      (SELECT count(*)::int FROM users WHERE deleted_at IS NULL)                    AS total_staff,
       (SELECT count(*)::int FROM check_ins
         WHERE checked_in_at > now() - interval '7 days')                           AS checkins_7d,
       (SELECT COALESCE(sum(amount), 0)::text FROM payments)                        AS revenue_total,
@@ -123,7 +123,8 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
       o.name  AS owner_name,
       o.email AS owner_email,
       o.phone AS owner_phone,
-      (SELECT count(*)::int FROM users u WHERE u.gym_id = g.id)                       AS staff_count,
+      (SELECT count(*)::int FROM users u
+        WHERE u.gym_id = g.id AND u.deleted_at IS NULL)                               AS staff_count,
       (SELECT count(*)::int FROM members m WHERE m.gym_id = g.id)                     AS member_count,
       (SELECT count(*)::int FROM members m
         WHERE m.gym_id = g.id AND m.status IN ('active', 'expiring', 'grace'))        AS active_member_count,
@@ -134,7 +135,7 @@ export async function listGyms(search?: string): Promise<GymListRow[]> {
     FROM gyms g
     LEFT JOIN LATERAL (
       SELECT u.name, u.email, u.phone FROM users u
-      WHERE u.gym_id = g.id AND u.role = 'owner'
+      WHERE u.gym_id = g.id AND u.role = 'owner' AND u.deleted_at IS NULL
       ORDER BY u.id ASC LIMIT 1
     ) o ON TRUE
     LEFT JOIN billing_plans pl ON pl.id = g.billing_plan_id
@@ -153,13 +154,22 @@ export interface GymStaffRow {
   phone: string | null;
   role: 'owner' | 'staff';
   created_at: string;
+  /** Non-null once removed. Only this panel sees removed accounts. */
+  deleted_at: string | null;
+  deleted_by: string | null;
 }
 
+/**
+ * Every staff row of one gym, removed ones included and sorted last.
+ *
+ * Deliberately unfiltered, unlike userModel.listByGym: this is the only screen
+ * that can restore an account, and it cannot restore what it cannot see.
+ */
 export async function gymStaff(gymId: number): Promise<GymStaffRow[]> {
   return db('users')
     .where({ gym_id: gymId })
-    .select('id', 'name', 'email', 'phone', 'role', 'created_at')
-    .orderBy('id');
+    .select('id', 'name', 'email', 'phone', 'role', 'created_at', 'deleted_at', 'deleted_by')
+    .orderByRaw('(deleted_at IS NOT NULL), id');
 }
 
 export async function setStatus(gymId: number, status: 'active' | 'frozen', note?: string | null): Promise<void> {

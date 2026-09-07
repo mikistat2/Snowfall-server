@@ -34,15 +34,30 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.list = list;
+exports.summary = summary;
 const paymentModel = __importStar(require("../models/paymentModel"));
 const pagination_1 = require("../utils/pagination");
-async function list(req, res) {
-    res.json(await paymentModel.list(req.auth.gymId, {
+/** The filter both the list and the summary read, parsed once. */
+function paymentFilter(req) {
+    return {
         from: req.query.from,
         to: req.query.to,
         method: req.query.method,
         member_id: req.query.member_id ? Number(req.query.member_id) : undefined,
-        offset: (0, pagination_1.parseOffset)(req.query.offset),
-    }, (0, pagination_1.parseLimit)(req.query.limit) ?? 200));
+    };
+}
+async function list(req, res) {
+    res.json(await paymentModel.list(req.auth.gymId, { ...paymentFilter(req), offset: (0, pagination_1.parseOffset)(req.query.offset) }, (0, pagination_1.parseLimit)(req.query.limit) ?? 200));
+}
+/**
+ * Count and total for the current filter, across every matching payment.
+ *
+ * Separate from the list because it answers a different question and changes
+ * far less often: the page fetches more rows as the reader scrolls, but the
+ * headline figure is settled by the filter alone, so it is fetched once per
+ * filter rather than once per page.
+ */
+async function summary(req, res) {
+    res.json(await paymentModel.summary(req.auth.gymId, paymentFilter(req)));
 }
 //# sourceMappingURL=paymentController.js.map

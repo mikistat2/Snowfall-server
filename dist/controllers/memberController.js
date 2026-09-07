@@ -42,6 +42,8 @@ exports.update = update;
 exports.allDescriptors = allDescriptors;
 exports.descriptorsVersion = descriptorsVersion;
 exports.addDescriptors = addDescriptors;
+exports.setPhoto = setPhoto;
+exports.clearPhoto = clearPhoto;
 exports.renew = renew;
 exports.archive = archive;
 exports.restore = restore;
@@ -50,17 +52,23 @@ exports.freeze = freeze;
 exports.unfreeze = unfreeze;
 const memberModel = __importStar(require("../models/memberModel"));
 const memberService = __importStar(require("../services/memberService"));
+const memberPhotoService = __importStar(require("../services/memberPhotoService"));
 const paymentService = __importStar(require("../services/paymentService"));
 const errors_1 = require("../utils/errors");
 const pagination_1 = require("../utils/pagination");
 async function list(req, res) {
-    res.json(await memberModel.listByGym(req.auth.gymId, {
+    const rows = await memberModel.listByGym(req.auth.gymId, {
         search: req.query.search,
         status: req.query.status,
         archived: req.query.archived === 'true',
         limit: (0, pagination_1.parseLimit)(req.query.limit),
         offset: (0, pagination_1.parseOffset)(req.query.offset),
-    }));
+    });
+    // Photos travel as URLs, never as bytes. Both sizes are sent because they
+    // are short strings; which one the client actually fetches — if any — is its
+    // decision, and the roster only renders a thumbnail for members whose
+    // membership needs attention.
+    res.json(rows.map((row) => ({ ...row, ...memberPhotoService.photoUrls(row) })));
 }
 /** Full data dump for the client-side PDF export. */
 async function exportData(req, res) {
@@ -163,6 +171,23 @@ async function addDescriptors(req, res) {
         await memberModel.clearDescriptors(memberId);
     await memberModel.addDescriptors(memberId, req.body.descriptors);
     res.status(201).json({ count: await memberModel.descriptorCount(memberId) });
+}
+/**
+ * Set or replace a member's profile picture.
+ *
+ * Both renditions arrive as base64 data URLs, already shrunk by the browser —
+ * see memberPhotoService for why the resizing belongs on the client.
+ *
+ * `source` defaults to 'manual' because that is who reaches this route through
+ * the UI: a staff member who took or picked a picture. Enrollment passes 'auto'
+ * explicitly, and 'auto' will not overwrite a picture a human chose.
+ */
+async function setPhoto(req, res) {
+    res.json(await memberPhotoService.setPhoto(req.auth.gymId, Number(req.params.id), { thumb: req.body.thumb, full: req.body.full }, req.body.source === 'auto' ? 'auto' : 'manual'));
+}
+async function clearPhoto(req, res) {
+    await memberPhotoService.clearPhoto(req.auth.gymId, Number(req.params.id));
+    res.status(204).end();
 }
 async function renew(req, res) {
     res.json(await paymentService.renew({

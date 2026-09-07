@@ -36,6 +36,13 @@ exports.env = {
             .filter(Boolean),
         ...NATIVE_ORIGINS,
     ])),
+    /**
+     * Shared secret for POST /tasks/daily, the external scheduler's trigger.
+     * Unset disables the endpoint outright rather than leaving it open — an
+     * unauthenticated route that sends every member a Telegram message is a
+     * denial-of-service button, and an empty-string comparison would pass.
+     */
+    tasksSecret: process.env.TASKS_SECRET?.trim() || null,
     autoMigrate: optional('AUTO_MIGRATE', 'true') === 'true',
     databaseUrl: process.env.DATABASE_URL,
     db: {
@@ -68,12 +75,46 @@ exports.env = {
      * The timeout is deliberately long: these calls hit a bank upstream.
      */
     verification: {
-        baseUrl: optional('VERIFY_API_URL', 'https://api.veritas.et').replace(/\/+$/, ''),
+        // The live Veritas host. Their docs quote `api.veritas.et` in one curl
+        // example, but that name does not resolve — this is the one that answers.
+        baseUrl: optional('VERIFY_API_URL', 'https://verifyapi.leulzenebe.pro').replace(/\/+$/, ''),
         apiKey: optional('VERIFY_API_KEY', ''),
         timeoutMs: Number(optional('VERIFY_TIMEOUT_MS', '30000')),
         retries: Number(optional('VERIFY_RETRIES', '2')),
         /** Keep the provider's full payload on the payment row (support/debugging). */
         storeRawResponse: optional('VERIFY_STORE_RAW', 'true') === 'true',
+    },
+    /**
+     * Where member profile photos are stored.
+     *
+     * Two drivers, chosen by PHOTO_STORAGE:
+     *
+     *  'local'    — writes under server/uploads/photos and serves them back off
+     *               this process. The default, so a fresh clone can capture and
+     *               display a photo with no cloud account and no keys at all.
+     *               Not for production: Render's disk is ephemeral, so every
+     *               deploy would wipe every photo.
+     *
+     *  'supabase' — writes to a public Storage bucket. Public is deliberate: a
+     *               signed URL carries a token that changes per request, so the
+     *               CDN treats every fetch as a new object and the caching that
+     *               makes this affordable never happens. What keeps a photo
+     *               private is the unguessable `photo_key` in its path.
+     *
+     * The service key bypasses every storage policy, so it lives here and never
+     * reaches the browser — uploads go through this API, which already knows
+     * which gym the caller belongs to.
+     */
+    photos: {
+        driver: optional('PHOTO_STORAGE', 'local'),
+        /** Absolute origin of this API, used to build URLs for the local driver. */
+        apiUrl: optional('PUBLIC_API_URL', `http://localhost:${optional('PORT', '4000')}`).replace(/\/+$/, ''),
+        localDir: optional('PHOTO_LOCAL_DIR', 'uploads/photos'),
+        supabase: {
+            url: optional('SUPABASE_URL', '').replace(/\/+$/, ''),
+            serviceKey: optional('SUPABASE_SERVICE_KEY', ''),
+            bucket: optional('SUPABASE_PHOTO_BUCKET', 'member-photos'),
+        },
     },
     // Feedback email (Gmail SMTP). SMTP_USER/SMTP_PASS must be a Gmail address
     // + App Password (2-Step Verification required) for sending to work.

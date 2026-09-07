@@ -50,8 +50,11 @@ exports.getSettings = getSettings;
 exports.updateSettings = updateSettings;
 exports.approveGym = approveGym;
 exports.renewGym = renewGym;
+exports.setTrial = setTrial;
 exports.updateNote = updateNote;
 exports.deleteGym = deleteGym;
+exports.deleteStaff = deleteStaff;
+exports.restoreStaff = restoreStaff;
 exports.listAdmins = listAdmins;
 exports.createAdmin = createAdmin;
 exports.updateAdmin = updateAdmin;
@@ -64,20 +67,16 @@ const errors_1 = require("../utils/errors");
 const platformModel = __importStar(require("../models/platformModel"));
 const platformAdminModel = __importStar(require("../models/platformAdminModel"));
 const gymModel = __importStar(require("../models/gymModel"));
+const userModel = __importStar(require("../models/userModel"));
+const refreshTokenModel = __importStar(require("../models/refreshTokenModel"));
+const featureNoticeModel = __importStar(require("../models/featureNoticeModel"));
 const memberModel = __importStar(require("../models/memberModel"));
 const platformAlert = __importStar(require("../services/platformAlertService"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
 const botManager = __importStar(require("../telegram/botManager"));
-/**
- * Owner alerts (Telegram/email) must never make the admin UI hang: wait at
- * most `ms`, then respond anyway — the alert keeps sending in the background.
- */
-async function timeboxed(promise, ms = 4000) {
-    return Promise.race([
-        promise,
-        new Promise((resolve) => setTimeout(() => resolve(undefined), ms).unref?.()),
-    ]);
-}
+// Owner alerts (Telegram/email) must never make the admin UI hang: wait at
+// most `ms`, then respond anyway — the alert keeps sending in the background.
+const async_1 = require("../utils/async");
 function safeEqual(a, b) {
     const ha = crypto_1.default.createHash('sha256').update(a).digest();
     const hb = crypto_1.default.createHash('sha256').update(b).digest();
@@ -142,11 +141,14 @@ async function freezeGym(req, res) {
     if (!gym)
         throw (0, errors_1.notFound)('Gym not found');
     const note = req.body.note;
+    // Stored on the gym, so every later 403 can quote it — that is the only
+    // channel guaranteed to reach the owner. Safe to call on an already-frozen
+    // gym: it rewrites the reason and leaves status and frozen_at alone.
     await platformModel.setStatus(id, 'frozen', note ?? undefined);
     // kill active sessions so the freeze takes effect immediately
     await platformModel.revokeGymSessions(id);
-    // tell the owner what happened and why (Telegram + email, best effort)
-    const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'freeze', note));
+    // push the same reason out of band too (Telegram + email, best effort)
+    const notified = await (0, async_1.timeboxed)(platformAlert.notifyGymOwners(id, gym.name, 'freeze', note));
     res.json({ ok: true, notified });
 }
 async function unfreezeGym(req, res) {
@@ -155,7 +157,7 @@ async function unfreezeGym(req, res) {
     if (!gym)
         throw (0, errors_1.notFound)('Gym not found');
     await platformModel.setStatus(id, 'active');
-    const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'unfreeze'));
+    const notified = await (0, async_1.timeboxed)(platformAlert.notifyGymOwners(id, gym.name, 'unfreeze'));
     res.json({ ok: true, notified });
 }
 /**
@@ -174,13 +176,46 @@ async function setFeatures(req, res) {
     const gym = await gymModel.findById(id);
     if (!gym)
         throw (0, errors_1.notFound)('Gym not found');
-    const body = req.body;
+    const { note, ...body } = req.body;
+    const changedBy = req.platform?.isOwner ? 'Platform Owner' : (req.platform?.name ?? 'Platform admin');
+    // Only the entitlements that actually MOVED produce a notice. Re-sending the
+    // current value (a double-click, a stale panel) must not raise a fresh alert
+    // for a change that did not happen.
+    const changes = [];
+    if (body.camera_allowed !== undefined && body.camera_allowed !== gym.camera_allowed) {
+        changes.push({ feature: 'camera', allowed: body.camera_allowed });
+    }
+    if (body.telegram_allowed !== undefined && body.telegram_allowed !== gym.telegram_allowed) {
+        changes.push({ feature: 'telegram', allowed: body.telegram_allowed });
+    }
     const updated = await gymModel.setFeatures(id, body);
+    // The in-app notice is the channel that cannot fail: it is a row, not a
+    // delivery attempt, so the owner sees it on their next load even with no bot
+    // linked and no mail server configured.
+    for (const change of changes) {
+        await featureNoticeModel.create({
+            gym_id: id,
+            feature: change.feature,
+            allowed: change.allowed,
+            note,
+            changed_by: changedBy,
+        });
+    }
+    // The bot is bracketed around the alert, not sequenced after it, because the
+    // alert about Telegram wants to go out OVER Telegram:
+    //   granting  → start the bot first, so the good news has a bot to go out on;
+    //   revoking  → stop it afterwards, so the explanation is not swallowed by
+    //               the very shutdown it is explaining.
+    if (body.telegram_allowed === true && !gym.telegram_allowed && updated.telegram_bot_token) {
+        await botManager.restartBot(id, updated.telegram_bot_token);
+    }
+    // A revocation waits longer for the send to land before killing the bot;
+    // nothing is racing the other cases, so they respond on the usual timebox.
+    const revokingTelegram = changes.some((c) => c.feature === 'telegram' && !c.allowed);
+    const alerts = Promise.all(changes.map((c) => platformAlert.notifyFeatureChange(id, gym.name, c.feature, c.allowed, note)));
+    const notified = (await (0, async_1.timeboxed)(alerts, revokingTelegram ? 8000 : 4000))?.at(-1);
     if (body.telegram_allowed === false && gym.telegram_allowed) {
         await botManager.stopBot(id);
-    }
-    else if (body.telegram_allowed === true && !gym.telegram_allowed && updated.telegram_bot_token) {
-        await botManager.restartBot(id, updated.telegram_bot_token);
     }
     // Revoking the camera can strand staff on the monitor page with a live token
     // and a now-403 recognition loop; the audit trail is what explains it.
@@ -193,6 +228,8 @@ async function setFeatures(req, res) {
         meta: {
             camera_allowed: updated.camera_allowed,
             telegram_allowed: updated.telegram_allowed,
+            changed: changes.map((c) => `${c.feature}:${c.allowed ? 'on' : 'off'}`),
+            note: note?.trim() || null,
             by: req.platform?.isOwner ? 'platform_owner' : 'platform_admin',
         },
     });
@@ -200,6 +237,8 @@ async function setFeatures(req, res) {
         ok: true,
         camera_allowed: updated.camera_allowed,
         telegram_allowed: updated.telegram_allowed,
+        changed: changes.length,
+        notified,
     });
 }
 /** Full member dump of ONE gym — the client renders it as that gym's members PDF. */
@@ -233,9 +272,12 @@ async function approveGym(req, res) {
         throw (0, errors_1.notFound)('Gym not found');
     if (gym.status !== 'pending')
         throw (0, errors_1.forbidden)('Only pending registrations can be approved');
-    const ends = await platformModel.approveGym(id);
-    const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString()));
-    res.json({ ok: true, subscription_ends_at: ends, notified });
+    // The admin's choice wins; otherwise honour the cycle the gym picked when it
+    // registered, and fall back to a year — which is what approval always did.
+    const cycle = req.body.cycle ?? gym.billing_cycle ?? 'YEARLY';
+    const ends = await platformModel.approveGym(id, cycle);
+    const notified = await (0, async_1.timeboxed)(platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString()));
+    res.json({ ok: true, subscription_ends_at: ends, cycle, notified });
 }
 /**
  * Extend the subscription by one month or one year (also converts a trial to
@@ -256,8 +298,46 @@ async function renewGym(req, res) {
         throw (0, errors_1.forbidden)('Approve the registration first');
     const { cycle = 'YEARLY', fromNow } = req.body;
     const ends = await platformModel.renewGym(id, cycle, fromNow ?? gym.is_trial);
-    const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString()));
+    const notified = await (0, async_1.timeboxed)(platformAlert.notifyGymOwners(id, gym.name, 'renew', new Date(ends).toDateString()));
     res.json({ ok: true, subscription_ends_at: ends, notified });
+}
+/**
+ * Move a gym onto a free trial — the undo for an accidental renewal, and the
+ * way to start a gym on a trial that registered before trial mode was on.
+ *
+ * Deliberately NOT alerted to the owner. Every other platform action here
+ * tells them something they gain; this one usually SHORTENS their end date
+ * while correcting an internal mistake, and "your subscription now ends in 30
+ * days instead of a year" is an alarming message to send about a clerical
+ * fix. It is audited instead, so the change is still traceable.
+ */
+async function setTrial(req, res) {
+    const id = Number(req.params.id);
+    const gym = await gymModel.findById(id);
+    if (!gym)
+        throw (0, errors_1.notFound)('Gym not found');
+    if (gym.status === 'pending')
+        throw (0, errors_1.forbidden)('Approve the registration first');
+    const { days } = req.body;
+    const endsAt = await platformModel.setTrial(id, days);
+    await auditLogModel.log({
+        gym_id: id,
+        user_id: null,
+        action: 'platform.trial_set',
+        entity: 'gym',
+        entity_id: id,
+        meta: {
+            days,
+            ends_at: new Date(endsAt).toISOString(),
+            // What it replaced — without this the log cannot answer "how much time
+            // did this take away", which is the only question worth asking of it.
+            previous_ends_at: gym.subscription_ends_at,
+            previous_is_trial: gym.is_trial,
+            previous_comped: gym.comped,
+            by: req.platform?.isOwner ? 'platform_owner' : 'platform_admin',
+        },
+    });
+    res.json({ ok: true, subscription_ends_at: endsAt, is_trial: true, comped: false });
 }
 async function updateNote(req, res) {
     const id = Number(req.params.id);
@@ -277,9 +357,128 @@ async function deleteGym(req, res) {
         throw (0, errors_1.forbidden)('Confirmation name does not match the gym name');
     }
     // alert BEFORE deleting — afterwards the owner accounts are gone
-    const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'delete', note), 8000);
+    const notified = await (0, async_1.timeboxed)(platformAlert.notifyGymOwners(id, gym.name, 'delete', note), 8000);
     await platformModel.deleteGym(id);
     res.json({ ok: true, notified });
+}
+// --------------------------------------- gym staff accounts (owner only) ----
+/**
+ * Both ids, rejected as "not found" rather than passed to Postgres as NaN —
+ * which is a 500 with a type error in it, not an answer.
+ */
+function staffParams(req) {
+    const gymId = Number(req.params.id);
+    const userId = Number(req.params.userId);
+    if (!Number.isInteger(gymId) || !Number.isInteger(userId)) {
+        throw (0, errors_1.notFound)('Staff account not found in this gym');
+    }
+    return { gymId, userId };
+}
+/** How this action is attributed in the audit log and on the tombstone. */
+function actorLabel(req) {
+    return req.platform?.isOwner ? 'Platform Owner' : `Platform admin: ${req.platform?.name ?? 'unknown'}`;
+}
+/**
+ * Remove one gym's staff account.
+ *
+ * A tombstone, not a DELETE — see the 20260907000015 migration for why a real
+ * delete is impossible for anyone who has recorded a payment. What the gym
+ * loses is the person's access; what it keeps is everything they did.
+ *
+ * Owner-only, alongside gym deletion and feature entitlements: reaching into a
+ * tenant and closing one of its accounts is a structural act, not one of the
+ * day-to-day permissions handed to sub-admins.
+ */
+async function deleteStaff(req, res) {
+    const { gymId, userId } = staffParams(req);
+    const gym = await gymModel.findById(gymId);
+    if (!gym)
+        throw (0, errors_1.notFound)('Gym not found');
+    // findAnyById, so an already-removed account reports itself as such instead
+    // of as missing — the panel shows those rows and can act on them twice.
+    const target = await userModel.findAnyById(userId);
+    // The gym_id check is what keeps this from being a cross-tenant delete by
+    // way of a mistyped id: the URL names a gym, and the account must be in it.
+    if (!target || target.gym_id !== gymId)
+        throw (0, errors_1.notFound)('Staff account not found in this gym');
+    if (target.deleted_at)
+        throw (0, errors_1.conflict)('That account has already been removed');
+    // A gym with no live owner is unusable and unrecoverable from the tenant
+    // side: nobody can sign in, nobody can create staff, and every owner alert
+    // has no recipient. Closing a whole gym is what `DELETE /gyms/:id` is for.
+    if (target.role === 'owner' && (await userModel.countLiveOwners(gymId)) <= 1) {
+        throw (0, errors_1.forbidden)(`${target.name} is the only owner account of "${gym.name}". Removing it would leave the gym with ` +
+            'nobody who can sign in. Add a second owner first, or delete the gym itself.');
+    }
+    const { note } = req.body;
+    const removed = await userModel.softDelete(gymId, userId, actorLabel(req));
+    // 0 rows means another request won the race between the read above and here.
+    if (!removed)
+        throw (0, errors_1.conflict)('That account has already been removed');
+    // The tombstone alone would leave them signed in: revoking is what actually
+    // ends the session (blockFrozenGym closes the access-token window).
+    await refreshTokenModel.revokeAllForUser(userId);
+    await auditLogModel.log({
+        gym_id: gymId,
+        // Null, not the platform account: audit_logs.user_id is a users FK and the
+        // platform admin has no row there. `by` in the meta carries the identity.
+        user_id: null,
+        action: 'platform.staff_removed',
+        entity: 'user',
+        entity_id: userId,
+        meta: {
+            name: target.name,
+            email: target.email,
+            role: target.role,
+            note: note?.trim() || null,
+            by: actorLabel(req),
+        },
+    });
+    const notified = await (0, async_1.timeboxed)(platformAlert.notifyStaffRemoved(gymId, gym.name, target, note));
+    res.json({ ok: true, notified });
+}
+/**
+ * Put a removed account back.
+ *
+ * Their sessions stay revoked — restoring access is not the same as handing
+ * back a session that was ended, and they still know their password.
+ */
+async function restoreStaff(req, res) {
+    const { gymId, userId } = staffParams(req);
+    const gym = await gymModel.findById(gymId);
+    if (!gym)
+        throw (0, errors_1.notFound)('Gym not found');
+    const target = await userModel.findAnyById(userId);
+    if (!target || target.gym_id !== gymId)
+        throw (0, errors_1.notFound)('Staff account not found in this gym');
+    if (!target.deleted_at)
+        throw (0, errors_1.conflict)('That account is already active');
+    // The partial unique index only covers live rows, so the address may have
+    // been handed to somebody else while this one was removed. Checked here so
+    // the answer is a sentence rather than a unique-violation 500.
+    const clash = await userModel.findByEmail(target.email);
+    if (clash) {
+        throw (0, errors_1.conflict)(`${target.email} now belongs to another active account (${clash.name}). ` +
+            'Change or remove that account before restoring this one.');
+    }
+    if (!(await userModel.restore(gymId, userId)))
+        throw (0, errors_1.conflict)('That account is already active');
+    await auditLogModel.log({
+        gym_id: gymId,
+        user_id: null,
+        action: 'platform.staff_restored',
+        entity: 'user',
+        entity_id: userId,
+        meta: {
+            name: target.name,
+            email: target.email,
+            role: target.role,
+            removed_at: target.deleted_at,
+            removed_by: target.deleted_by,
+            by: actorLabel(req),
+        },
+    });
+    res.json({ ok: true });
 }
 // ------------------------------------------- sub-admin management (owner) ----
 async function listAdmins(_req, res) {

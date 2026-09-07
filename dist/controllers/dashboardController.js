@@ -39,6 +39,7 @@ const knex_1 = require("../db/knex");
 const checkInModel = __importStar(require("../models/checkInModel"));
 const paymentModel = __importStar(require("../models/paymentModel"));
 const occupancyService = __importStar(require("../services/occupancyService"));
+const memberPhotoService = __importStar(require("../services/memberPhotoService"));
 async function stats(req, res) {
     const gymId = req.auth.gymId;
     const now = new Date();
@@ -92,14 +93,22 @@ async function stats(req, res) {
  * "Today" digest for the sidebar page: everything that happened today (new
  * members, payments, check-ins, guest passes) plus who is about to expire in
  * the next 7 days and who just expired in the last 7 — actionable follow-ups.
+ *
+ * Not paginated, and deliberately so: every list here is bounded by a date
+ * window rather than by the size of the gym. "Today" resets each morning and
+ * the expiry window is fourteen days wide, so none of them grows without limit
+ * the way the members roster does. The one exception is the payment list, which
+ * grows with how busy the day was — that one is capped below.
  */
+const TODAY_PAYMENT_ROWS = 50;
 async function today(req, res) {
     const gymId = req.auth.gymId;
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const [newMembers, expiring, payments, checkInRow, occupancy, guestRow] = await Promise.all([
         knex_1.db.raw(`
-      SELECT m.id, m.full_name, m.phone, m.created_at, p.name AS plan_name
+      SELECT m.id, m.full_name, m.phone, m.created_at, p.name AS plan_name,
+             m.photo_key, m.photo_version
       FROM members m
       LEFT JOIN LATERAL (
         SELECT pl.name FROM subscriptions s JOIN plans pl ON pl.id = s.plan_id
@@ -118,6 +127,7 @@ async function today(req, res) {
         ORDER BY s.member_id, s.expires_at DESC
       )
       SELECT m.id, m.full_name, m.phone, m.status, l.expires_at,
+             m.photo_key, m.photo_version,
              (l.expires_at - CURRENT_DATE)::int AS days_left
       FROM latest l
       JOIN members m ON m.id = l.member_id
@@ -126,12 +136,33 @@ async function today(req, res) {
         AND l.expires_at BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE + 7
       ORDER BY l.expires_at, m.full_name
     `, [gymId]),
+        /**
+         * Today's payments: the count and the sum over all of them, but only the
+         * newest `TODAY_PAYMENT_ROWS` rows to display.
+         *
+         * The two are separated on purpose. The tile shows the day's takings and
+         * has to be exact, so it is aggregated in SQL rather than by adding up
+         * whatever rows were sent. The list underneath is a glance at the recent
+         * few — nobody scrolls a day's receipts here, that is what the Payments
+         * page is for — so capping it bounds a response that would otherwise grow
+         * with how busy the gym was.
+         */
         knex_1.db.raw(`
-      SELECT p.id, p.amount, p.method, p.created_at, m.full_name AS member_name
-      FROM payments p JOIN members m ON m.id = p.member_id
-      WHERE p.gym_id = ? AND p.created_at >= ?
-      ORDER BY p.created_at DESC
-    `, [gymId, startOfDay]),
+      SELECT
+        (SELECT count(*)::int FROM payments
+          WHERE gym_id = :gymId AND created_at >= :start)                    AS count,
+        (SELECT coalesce(sum(amount), 0) FROM payments
+          WHERE gym_id = :gymId AND created_at >= :start)                    AS total,
+        coalesce((
+          SELECT json_agg(r) FROM (
+            SELECT p.id, p.amount, p.method, p.created_at, m.full_name AS member_name
+            FROM payments p JOIN members m ON m.id = p.member_id
+            WHERE p.gym_id = :gymId AND p.created_at >= :start
+            ORDER BY p.created_at DESC
+            LIMIT :limit
+          ) r
+        ), '[]'::json)                                                       AS rows
+    `, { gymId, start: startOfDay, limit: TODAY_PAYMENT_ROWS }),
         knex_1.db.raw(`
       SELECT
         count(*) FILTER (WHERE decision IN ('allowed', 'override'))::int AS allowed,
@@ -148,14 +179,32 @@ async function today(req, res) {
             .count('id as count')
             .first(),
     ]);
-    const paymentRows = payments.rows;
+    const today = payments.rows[0];
     res.json({
-        new_members: newMembers.rows,
-        expiring: expiring.rows,
+        // Today's sign-ups, with a face each — bounded by the day, so a handful.
+        new_members: newMembers.rows.map((row) => ({
+            ...row,
+            ...memberPhotoService.photoUrls(row),
+        })),
+        /**
+         * Photo URLs on the follow-up list.
+         *
+         * These are the members someone is about to phone or chase at the door, so
+         * a face beside the name is worth more here than anywhere else — and it
+         * costs nothing extra: this list is capped by a fourteen-day window, and it
+         * is the same expiring/grace/expired set the roster already loads
+         * thumbnails for, so the images are usually in the browser cache already.
+         */
+        expiring: expiring.rows.map((row) => ({
+            ...row,
+            ...memberPhotoService.photoUrls(row),
+        })),
         payments_today: {
-            count: paymentRows.length,
-            total: paymentRows.reduce((sum, p) => sum + Number(p.amount), 0),
-            rows: payments.rows,
+            // count and total are the whole day, from SQL; rows are the capped
+            // display list, so the tile stays right even when the list is trimmed.
+            count: today.count,
+            total: Number(today.total),
+            rows: today.rows,
         },
         check_ins_today: checkInRow.rows[0],
         occupancy,

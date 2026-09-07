@@ -74,6 +74,20 @@ exports.knexConfig = {
         min: 0,
         max: 10,
         idleTimeoutMillis: exports.dbAutosuspends ? activity_1.KEEPALIVE_INTERVAL_MINUTES * 60_000 + 60_000 : 30_000,
+        afterCreate: (conn, done) => {
+            // Supabase's pooler hands out sessions with extra_float_digits = 0, where
+            // Postgres' own default (and Neon's) is 1. At 0 a float4 renders with six
+            // significant digits instead of the shortest string that round-trips, and
+            // node-postgres parses the TEXT form — so the app would receive 0.243376
+            // for a check-in confidence stored as 0.24337596, and similarly rounded
+            // face descriptors.
+            //
+            // Nothing depends on that last digit (a float4 carries ~7 either way, and
+            // the face-match threshold is ~0.5), but it is a silent difference in what
+            // the same row returns depending on who is hosting it. One statement per
+            // connection removes it.
+            conn.query('SET extra_float_digits = 1', (err) => done(err, conn));
+        },
     },
 };
 //# sourceMappingURL=database.js.map

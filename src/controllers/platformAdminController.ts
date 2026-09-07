@@ -7,6 +7,8 @@ import { conflict, forbidden, notFound, unauthorized, AppError } from '../utils/
 import * as platformModel from '../models/platformModel';
 import * as platformAdminModel from '../models/platformAdminModel';
 import * as gymModel from '../models/gymModel';
+import * as userModel from '../models/userModel';
+import * as refreshTokenModel from '../models/refreshTokenModel';
 import * as featureNoticeModel from '../models/featureNoticeModel';
 import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
@@ -320,6 +322,145 @@ export async function deleteGym(req: Request, res: Response): Promise<void> {
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'delete', note), 8000);
   await platformModel.deleteGym(id);
   res.json({ ok: true, notified });
+}
+
+// --------------------------------------- gym staff accounts (owner only) ----
+
+/**
+ * Both ids, rejected as "not found" rather than passed to Postgres as NaN —
+ * which is a 500 with a type error in it, not an answer.
+ */
+function staffParams(req: Request): { gymId: number; userId: number } {
+  const gymId = Number(req.params.id);
+  const userId = Number(req.params.userId);
+  if (!Number.isInteger(gymId) || !Number.isInteger(userId)) {
+    throw notFound('Staff account not found in this gym');
+  }
+  return { gymId, userId };
+}
+
+/** How this action is attributed in the audit log and on the tombstone. */
+function actorLabel(req: Request): string {
+  return req.platform?.isOwner ? 'Platform Owner' : `Platform admin: ${req.platform?.name ?? 'unknown'}`;
+}
+
+/**
+ * Remove one gym's staff account.
+ *
+ * A tombstone, not a DELETE — see the 20260907000015 migration for why a real
+ * delete is impossible for anyone who has recorded a payment. What the gym
+ * loses is the person's access; what it keeps is everything they did.
+ *
+ * Owner-only, alongside gym deletion and feature entitlements: reaching into a
+ * tenant and closing one of its accounts is a structural act, not one of the
+ * day-to-day permissions handed to sub-admins.
+ */
+export async function deleteStaff(req: Request, res: Response): Promise<void> {
+  const { gymId, userId } = staffParams(req);
+  const gym = await gymModel.findById(gymId);
+  if (!gym) throw notFound('Gym not found');
+
+  // findAnyById, so an already-removed account reports itself as such instead
+  // of as missing — the panel shows those rows and can act on them twice.
+  const target = await userModel.findAnyById(userId);
+  // The gym_id check is what keeps this from being a cross-tenant delete by
+  // way of a mistyped id: the URL names a gym, and the account must be in it.
+  if (!target || target.gym_id !== gymId) throw notFound('Staff account not found in this gym');
+  if (target.deleted_at) throw conflict('That account has already been removed');
+
+  const { note } = req.body as { note?: string };
+  // The last-owner rule is enforced inside this call rather than by a check
+  // out here, so it holds under concurrency — see the note on softDelete. Both
+  // refusals below are therefore about state as of the write, not as of a read
+  // that has already gone stale.
+  const outcome = await userModel.softDelete(gymId, userId, actorLabel(req));
+  // A gym with no live owner is unusable and unrecoverable from the tenant
+  // side: nobody can sign in, nobody can create staff, and every owner alert
+  // has no recipient. Closing a whole gym is what `DELETE /gyms/:id` is for.
+  if (outcome === 'last-owner') {
+    throw forbidden(
+      `${target.name} is the only owner account of "${gym.name}". Removing it would leave the gym with ` +
+        'nobody who can sign in. Add a second owner first, or delete the gym itself.',
+    );
+  }
+  if (outcome === 'already-removed') throw conflict('That account has already been removed');
+  // The tombstone alone would leave them signed in: revoking is what actually
+  // ends the session (blockFrozenGym closes the access-token window).
+  await refreshTokenModel.revokeAllForUser(userId);
+
+  await auditLogModel.log({
+    gym_id: gymId,
+    // Null, not the platform account: audit_logs.user_id is a users FK and the
+    // platform admin has no row there. `by` in the meta carries the identity.
+    user_id: null,
+    action: 'platform.staff_removed',
+    entity: 'user',
+    entity_id: userId,
+    meta: {
+      name: target.name,
+      email: target.email,
+      role: target.role,
+      note: note?.trim() || null,
+      by: actorLabel(req),
+    },
+  });
+
+  const notified = await timeboxed(
+    platformAlert.notifyStaffRemoved(gymId, gym.name, target, note),
+  );
+  res.json({ ok: true, notified });
+}
+
+/**
+ * Put a removed account back.
+ *
+ * Their sessions stay revoked — restoring access is not the same as handing
+ * back a session that was ended, and they still know their password.
+ */
+export async function restoreStaff(req: Request, res: Response): Promise<void> {
+  const { gymId, userId } = staffParams(req);
+  const gym = await gymModel.findById(gymId);
+  if (!gym) throw notFound('Gym not found');
+
+  const target = await userModel.findAnyById(userId);
+  if (!target || target.gym_id !== gymId) throw notFound('Staff account not found in this gym');
+  if (!target.deleted_at) throw conflict('That account is already active');
+
+  // The partial unique index only covers live rows, so the address may have
+  // been handed to somebody else while this one was removed. Asked first, to
+  // name the account in the way; the index itself is what decides, and restore
+  // reports that back as 'email-taken' if it is claimed in between.
+  const clash = await userModel.findByEmail(target.email);
+  if (clash) {
+    throw conflict(
+      `${target.email} now belongs to another active account (${clash.name}). ` +
+        'Change or remove that account before restoring this one.',
+    );
+  }
+
+  const outcome = await userModel.restore(gymId, userId);
+  if (outcome === 'email-taken') {
+    throw conflict(`${target.email} was just claimed by another account. Restore is not possible.`);
+  }
+  if (outcome === 'already-active') throw conflict('That account is already active');
+
+  await auditLogModel.log({
+    gym_id: gymId,
+    user_id: null,
+    action: 'platform.staff_restored',
+    entity: 'user',
+    entity_id: userId,
+    meta: {
+      name: target.name,
+      email: target.email,
+      role: target.role,
+      removed_at: target.deleted_at,
+      removed_by: target.deleted_by,
+      by: actorLabel(req),
+    },
+  });
+
+  res.json({ ok: true });
 }
 
 // ------------------------------------------- sub-admin management (owner) ----

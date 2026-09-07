@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, type AccessPayload } from '../utils/jwt';
 import { AppError, forbidden, unauthorized } from '../utils/errors';
 import * as gymModel from '../models/gymModel';
+import * as userModel from '../models/userModel';
 import * as billingModel from '../models/billingModel';
 import * as billingService from '../services/billingService';
 import * as platformAdminModel from '../models/platformAdminModel';
@@ -88,12 +89,27 @@ export function requirePlatformPerm(perm: keyof PlatformAdminPerms) {
 }
 
 /**
- * Blocks every tenant API call once the platform admin freezes the gym.
- * One indexed PK lookup per request — negligible at this scale.
+ * Blocks every tenant API call once the platform admin freezes the gym, or
+ * once the caller's own staff account is removed.
+ *
+ * The account check has to live here because access tokens are stateless:
+ * requireAuth only verifies a signature, so a removed employee would otherwise
+ * keep full access until their token expired — up to 15 minutes, and the whole
+ * point of removing an account is usually that the next 15 minutes matter.
+ * Their refresh token is revoked at removal, so this is the last door left.
+ *
+ * Two indexed PK lookups per request, issued together so they cost one
+ * round-trip of latency rather than two.
  */
 export async function blockFrozenGym(req: Request, _res: Response, next: NextFunction): Promise<void> {
-  const gym = await gymModel.findById(req.auth.gymId);
+  const [gym, live] = await Promise.all([
+    gymModel.findById(req.auth.gymId),
+    userModel.isLive(req.auth.sub),
+  ]);
   if (!gym) throw unauthorized('Gym no longer exists');
+  if (!live) {
+    throw unauthorized('Your account has been removed. Contact your gym owner if this is unexpected.');
+  }
   req.gym = gym;
   if (gym.status === 'frozen') {
     throw forbidden(gymModel.frozenMessage(gym), 'GYM_FROZEN');

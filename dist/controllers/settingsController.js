@@ -44,6 +44,7 @@ exports.removeStaff = removeStaff;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const gymModel = __importStar(require("../models/gymModel"));
 const userModel = __importStar(require("../models/userModel"));
+const refreshTokenModel = __importStar(require("../models/refreshTokenModel"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
 const errors_1 = require("../utils/errors");
 const types_1 = require("../types");
@@ -111,6 +112,15 @@ async function createStaff(req, res) {
     });
     res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role });
 }
+/**
+ * Remove a staff account (gym owner's own button).
+ *
+ * This used to DELETE the row, which meant it raised a foreign-key error for
+ * any staff member who had ever marked a payment or signed in a guest —
+ * failing hardest on the people who had done the most work. It now writes the
+ * same tombstone the platform panel does, so it works for everyone and the
+ * payment history keeps naming who took the money.
+ */
 async function removeStaff(req, res) {
     const id = Number(req.params.id);
     if (id === req.auth.sub)
@@ -120,7 +130,10 @@ async function removeStaff(req, res) {
         throw (0, errors_1.notFound)('User not found');
     if (target.role === 'owner')
         throw (0, errors_1.badRequest)('Owner accounts cannot be deleted');
-    await userModel.remove(req.auth.gymId, id);
+    await userModel.softDelete(req.auth.gymId, id, `${req.auth.name} (gym owner)`);
+    // The old hard delete cascaded refresh_tokens away; a tombstone does not, so
+    // the sessions have to be ended explicitly or the account stays signed in.
+    await refreshTokenModel.revokeAllForUser(id);
     await auditLogModel.log({
         gym_id: req.auth.gymId,
         user_id: req.auth.sub,

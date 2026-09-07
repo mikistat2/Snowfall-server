@@ -51,7 +51,8 @@ const billing = __importStar(require("../controllers/platformBillingController")
  *    platform settings and managing sub-admins;
  *  - SUB-ADMINS (platform_admins table): read the dashboard, plus whatever
  *    per-account permissions the owner granted (approve/freeze/renew/export).
- *    They can never delete gyms — there is no permission for it.
+ *    They can never delete gyms or gym staff accounts — there is no permission
+ *    for either.
  * Authenticated with a dedicated 'platform' JWT — completely separate from
  * gym staff accounts.
  */
@@ -72,13 +73,21 @@ exports.adminRouter.get('/gyms', (0, async_1.asyncHandler)(admin.listGyms));
 exports.adminRouter.get('/gyms/:id', (0, async_1.asyncHandler)(admin.gymDetail));
 exports.adminRouter.put('/gyms/:id/note', (0, validate_1.validate)(zod_1.z.object({ note: zod_1.z.string().max(1000).nullable() })), (0, async_1.asyncHandler)(admin.updateNote));
 // permission-gated (the owner always passes)
-exports.adminRouter.post('/gyms/:id/approve', (0, auth_1.requirePlatformPerm)('approve'), (0, async_1.asyncHandler)(admin.approveGym));
+exports.adminRouter.post('/gyms/:id/approve', (0, auth_1.requirePlatformPerm)('approve'), 
+// Body optional: no body still means "a year", as approval always did.
+(0, validate_1.validate)(zod_1.z.object({ cycle: zod_1.z.enum(['MONTHLY', 'YEARLY']) }).partial().default({})), (0, async_1.asyncHandler)(admin.approveGym));
 exports.adminRouter.post('/gyms/:id/renew', (0, auth_1.requirePlatformPerm)('renew'), 
 // Body is optional: no body at all still means "+1 year", as it always did.
 (0, validate_1.validate)(zod_1.z
     .object({ cycle: zod_1.z.enum(['MONTHLY', 'YEARLY']), fromNow: zod_1.z.boolean() })
     .partial()
     .default({})), (0, async_1.asyncHandler)(admin.renewGym));
+// The undo for the route above. Shares the `renew` permission because it is
+// the same authority — moving a gym's subscription end date around.
+exports.adminRouter.post('/gyms/:id/trial', (0, auth_1.requirePlatformPerm)('renew'), 
+// Capped at a year: anything longer is a subscription, and should be granted
+// as one so the billing side reports it honestly.
+(0, validate_1.validate)(zod_1.z.object({ days: zod_1.z.number().int().min(1).max(365).default(30) }).default({})), (0, async_1.asyncHandler)(admin.setTrial));
 exports.adminRouter.post('/gyms/:id/freeze', (0, auth_1.requirePlatformPerm)('freeze'), (0, validate_1.validate)(zod_1.z.object({ note: zod_1.z.string().max(1000).optional() })), (0, async_1.asyncHandler)(admin.freezeGym));
 exports.adminRouter.post('/gyms/:id/unfreeze', (0, auth_1.requirePlatformPerm)('freeze'), (0, async_1.asyncHandler)(admin.unfreezeGym));
 exports.adminRouter.get('/export', (0, auth_1.requirePlatformPerm)('export'), (0, async_1.asyncHandler)(admin.exportAllMembers));
@@ -91,11 +100,33 @@ exports.adminRouter.put('/settings', auth_1.requirePlatformOwner, (0, validate_1
 // Feature entitlements. Owner-only, matching the other structural switches
 // (platform settings, comped status, gym deletion) rather than the
 // day-to-day permissions granted to sub-admins.
-exports.adminRouter.put('/gyms/:id/features', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z
-    .object({ camera_allowed: zod_1.z.boolean(), telegram_allowed: zod_1.z.boolean() })
+exports.adminRouter.put('/gyms/:id/features', auth_1.requirePlatformOwner, (0, validate_1.validate)(
+// `note` reaches the gym owner verbatim — in the app, in Telegram and by
+// email — so it is the difference between a feature vanishing and a
+// feature being explained. Optional, but the panel always asks for one.
+zod_1.z
+    .object({
+    camera_allowed: zod_1.z.boolean(),
+    telegram_allowed: zod_1.z.boolean(),
+    note: zod_1.z.string().max(1000),
+})
     .partial()
-    .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' })), (0, async_1.asyncHandler)(admin.setFeatures));
+    .refine((v) => v.camera_allowed !== undefined || v.telegram_allowed !== undefined, {
+    message: 'Nothing to update',
+})), (0, async_1.asyncHandler)(admin.setFeatures));
 exports.adminRouter.delete('/gyms/:id', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z.object({ confirm_name: zod_1.z.string(), note: zod_1.z.string().max(1000).optional() })), (0, async_1.asyncHandler)(admin.deleteGym));
+// Individual staff accounts of a tenant. Owner-only for the same reason gym
+// deletion is: this reaches inside somebody else's gym and takes an account
+// away, which is not one of the day-to-day sub-admin permissions.
+//
+// Removal is reversible (the row is tombstoned, not deleted) — hence a restore
+// route, and hence no typed-name confirmation like the gym delete above.
+exports.adminRouter.delete('/gyms/:id/staff/:userId', auth_1.requirePlatformOwner, 
+// The reason reaches the gym's owners verbatim. Optional, and the panel
+// asks for one anyway — an account disappearing with no explanation is the
+// fastest way to a support call.
+(0, validate_1.validate)(zod_1.z.object({ note: zod_1.z.string().max(1000).optional() }).default({})), (0, async_1.asyncHandler)(admin.deleteStaff));
+exports.adminRouter.post('/gyms/:id/staff/:userId/restore', auth_1.requirePlatformOwner, (0, async_1.asyncHandler)(admin.restoreStaff));
 // ---------------------------------------------------------------- billing --
 // Subscription billing: the master switch, our prices and payment accounts,
 // and every verification attempt made by any gym. Settings and plans are
@@ -126,6 +157,12 @@ const planBody = zod_1.z.object({
     currency: zod_1.z.string().min(1).max(8).optional(),
     sort_order: zod_1.z.number().int().min(0).max(999).optional(),
     is_active: zod_1.z.boolean().optional(),
+    // What the package includes. `member_limit` is null for unlimited, matching
+    // the column; the CHECK constraint refuses zero and negatives.
+    camera: zod_1.z.boolean().optional(),
+    telegram: zod_1.z.boolean().optional(),
+    member_limit: zod_1.z.number().int().positive().nullable().optional(),
+    setup_fee: zod_1.z.number().nonnegative().optional(),
 });
 exports.adminRouter.get('/billing/plans', auth_1.requirePlatformOwner, (0, async_1.asyncHandler)(billing.listPlans));
 exports.adminRouter.post('/billing/plans', auth_1.requirePlatformOwner, (0, validate_1.validate)(planBody), (0, async_1.asyncHandler)(billing.createPlan));

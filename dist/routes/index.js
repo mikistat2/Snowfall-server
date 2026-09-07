@@ -44,6 +44,7 @@ const async_1 = require("../utils/async");
 const validate_1 = require("../middleware/validate");
 const multer_1 = __importDefault(require("multer"));
 const auth_1 = require("../middleware/auth");
+const pagination_1 = require("../utils/pagination");
 const admin_1 = require("./admin");
 const auth = __importStar(require("../controllers/authController"));
 const plans = __importStar(require("../controllers/planController"));
@@ -55,8 +56,10 @@ const settings = __importStar(require("../controllers/settingsController"));
 const telegram = __importStar(require("../controllers/telegramController"));
 const guests = __importStar(require("../controllers/guestController"));
 const billing = __importStar(require("../controllers/billingController"));
+const features = __importStar(require("../controllers/featureController"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
 const platformModel = __importStar(require("../models/platformModel"));
+const billingModel = __importStar(require("../models/billingModel"));
 const cameraProxyController_1 = require("../controllers/cameraProxyController");
 const feedback = __importStar(require("../controllers/feedbackController"));
 exports.api = (0, express_1.Router)();
@@ -75,6 +78,18 @@ const registerGymSchema = zod_1.z.object({
         password: zod_1.z.string().min(8),
         phone: zod_1.z.string().optional(),
     }),
+    /**
+     * The package the gym signs up for. Optional so an older client — or the
+     * Android app, which has no registration screen — keeps working; the gym
+     * simply has no recorded plan until it pays, as every gym did before this.
+     */
+    planId: zod_1.z.number().int().positive().optional(),
+    /**
+     * Monthly or yearly. Recorded, not charged — it is what the gym intends to
+     * be billed, so the approval and the checkout screen can both default to it
+     * instead of guessing.
+     */
+    cycle: zod_1.z.enum(['MONTHLY', 'YEARLY']).optional(),
 });
 const planSchema = zod_1.z.object({
     name: zod_1.z.string().min(1),
@@ -95,12 +110,44 @@ const memberInfoSchema = zod_1.z.object({
     sex: zod_1.z.enum(['male', 'female']).optional(),
     photo_url: zod_1.z.string().nullable().optional(),
 });
+/**
+ * A profile picture upload: two renditions of the same image, already shrunk
+ * by the browser.
+ *
+ * Only the shape is checked here — that a string is a base64 image data URL of
+ * an allowed type and a sane size is decided in memberPhotoService, which has
+ * to decode the bytes to know. The cap below is a cheap first gate so a
+ * multi-megabyte body is rejected before anything tries to parse it.
+ */
+const photoSchema = zod_1.z.object({
+    thumb: zod_1.z.string().max(300_000),
+    full: zod_1.z.string().max(600_000),
+    source: zod_1.z.enum(['manual', 'auto']).optional(),
+});
+/**
+ * The amount taken for a membership period.
+ *
+ * Required, as of this version. It used to be optional and fall back to the
+ * plan's list price, which meant a blank field and a discounted sale recorded
+ * the same number — the gym's revenue figures quietly disagreed with its till.
+ * Now the person taking the money has to state it.
+ *
+ * Zero is still accepted, and deliberately: a comped or promotional membership
+ * is a real thing a gym does, and the DB has always allowed it
+ * (`CHECK (amount >= 0)`). The difference is that zero must now be typed on
+ * purpose rather than arrived at by leaving a field alone.
+ *
+ * This is forward-looking only. Nothing revalidates the members and payments
+ * already on file, and no migration touches them — memberships enrolled before
+ * this change stay exactly as they are.
+ */
+const paymentAmount = zod_1.z.number().nonnegative();
 const enrollSchema = zod_1.z.object({
     member: memberInfoSchema,
     descriptors: zod_1.z.array(descriptor).max(5).default([]),
     plan_id: zod_1.z.number().int().positive(),
     payment: zod_1.z.object({
-        amount: zod_1.z.number().nonnegative().optional(),
+        amount: paymentAmount,
         method: paymentMethod,
         note: zod_1.z.string().optional(),
     }),
@@ -122,10 +169,16 @@ const previousMemberSchema = zod_1.z.object({
     starts_at: dateOnlyString,
     /** Omitted = start date + the plan's duration. */
     expires_at: dateOnlyString.optional(),
-    /** Omitted = the money was taken before the system existed and is not being recorded. */
+    /**
+     * Omitted = the money was taken before the system existed and is not being
+     * recorded. That stays optional: this page back-fills a paper register, and
+     * most of those payments happened months ago in a notebook. But if a payment
+     * IS being recorded here, its amount is required like any other — the choice
+     * is whether to log one, never how much it vaguely was.
+     */
     payment: zod_1.z
         .object({
-        amount: zod_1.z.number().nonnegative().optional(),
+        amount: paymentAmount,
         method: paymentMethod,
         note: zod_1.z.string().optional(),
     })
@@ -158,7 +211,7 @@ const memberUpdateSchema = zod_1.z
     .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
 const renewSchema = zod_1.z.object({
     plan_id: zod_1.z.number().int().positive(),
-    amount: zod_1.z.number().nonnegative().optional(),
+    amount: paymentAmount,
     method: paymentMethod,
     note: zod_1.z.string().optional(),
 });
@@ -241,9 +294,35 @@ const receiptUpload = (0, multer_1.default)({
 });
 // ---------- auth ----------
 // public: lets the landing/registration pages advertise an active free trial
+// and show the packages a gym can sign up for.
 exports.api.get('/auth/registration-mode', (0, async_1.asyncHandler)(async (_req, res) => {
-    const { trial_mode, trial_days } = await platformModel.getSettings();
-    res.json({ trial_mode, trial_days });
+    const [{ trial_mode, trial_days }, plans] = await Promise.all([
+        platformModel.getSettings(),
+        billingModel.listPlans(),
+    ]);
+    res.json({
+        trial_mode,
+        trial_days,
+        /**
+         * Prices and contents only — deliberately no internal columns. This is
+         * an unauthenticated endpoint, and the free tier is filtered out because
+         * it is not something a gym can choose: it is where a gym sits before it
+         * pays, and resolveCycle refuses a zero price anyway.
+         */
+        plans: plans
+            .filter((p) => Number(p.monthly_price) > 0)
+            .map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            monthly_price: p.monthly_price,
+            yearly_price: p.yearly_price,
+            currency: p.currency,
+            camera: p.camera,
+            telegram: p.telegram,
+            setup_fee: p.setup_fee,
+        })),
+    });
 }));
 exports.api.post('/auth/register-gym', authLimiter, (0, validate_1.validate)(registerGymSchema), (0, async_1.asyncHandler)(auth.registerGym));
 exports.api.post('/auth/login', authLimiter, (0, validate_1.validate)(zod_1.z.object({ email: zod_1.z.string().email(), password: zod_1.z.string() })), (0, async_1.asyncHandler)(auth.login));
@@ -272,6 +351,14 @@ exports.api.post('/billing/verify', verifyLimiter, auth_1.requireOwner, (0, vali
 })), (0, async_1.asyncHandler)(billing.verifyReference));
 // multipart — validated inside the controller, since zod cannot see the file
 exports.api.post('/billing/verify-screenshot', verifyLimiter, auth_1.requireOwner, receiptUpload.single('file'), (0, async_1.asyncHandler)(billing.verifyScreenshot));
+// ---------- platform feature notices (also NOT behind the paywall) ----------
+// Two reasons this sits above the paywall: an unpaid gym is parked on
+// /billing, where a "your camera was switched off" alert is still the truth it
+// needs; and a 402 on this poll would be pure console noise on a page whose
+// whole job is to clear the 402.
+exports.api.get('/features', (0, async_1.asyncHandler)(features.state));
+exports.api.post('/features/notices/:id/ack', (0, async_1.asyncHandler)(features.acknowledge));
+exports.api.post('/features/notices/ack-all', (0, async_1.asyncHandler)(features.acknowledgeAll));
 exports.api.use((0, async_1.asyncHandler)(auth_1.requireActiveSubscription));
 // ---------- plans ----------
 exports.api.get('/plans', (0, async_1.asyncHandler)(plans.list));
@@ -288,6 +375,11 @@ exports.api.post('/members/previous', (0, validate_1.validate)(previousMemberSch
 exports.api.get('/members/:id', (0, async_1.asyncHandler)(members.detail));
 exports.api.put('/members/:id', (0, validate_1.validate)(memberUpdateSchema), (0, async_1.asyncHandler)(members.update));
 exports.api.post('/members/:id/descriptors', (0, auth_1.requireFeature)('camera'), (0, validate_1.validate)(zod_1.z.object({ descriptors: zod_1.z.array(descriptor).min(1).max(5), replace: zod_1.z.boolean().optional() })), (0, async_1.asyncHandler)(members.addDescriptors));
+// Profile pictures. Deliberately NOT behind requireFeature('camera'): a gym on
+// the Regular package has no face recognition, and putting a face to a name is
+// exactly what it is missing at the front desk.
+exports.api.put('/members/:id/photo', (0, validate_1.validate)(photoSchema), (0, async_1.asyncHandler)(members.setPhoto));
+exports.api.delete('/members/:id/photo', (0, async_1.asyncHandler)(members.clearPhoto));
 exports.api.post('/members/:id/renew', (0, validate_1.validate)(renewSchema), (0, async_1.asyncHandler)(members.renew));
 // Removing someone is owner-only, like every other destructive action here.
 // Archive keeps the payment history; DELETE is refused for anyone who has any.
@@ -312,10 +404,12 @@ exports.api.post('/guests/:id/expire', (0, async_1.asyncHandler)(guests.expire))
 exports.api.post('/guests/:id/convert', (0, validate_1.validate)(zod_1.z.object({ member_id: zod_1.z.number().int().positive() })), (0, async_1.asyncHandler)(guests.convert));
 // ---------- audit log (Phase 3, owner only) ----------
 exports.api.get('/audit-logs', auth_1.requireOwner, (0, async_1.asyncHandler)(async (req, res) => {
-    res.json(await auditLogModel.list(req.auth.gymId, {
+    const result = await auditLogModel.list(req.auth.gymId, {
         entity: req.query.entity,
         action: req.query.action,
-    }));
+        ...(0, pagination_1.pageParams)(req),
+    });
+    res.json((0, pagination_1.pagedBody)(req, result));
 }));
 // ---------- telegram / notifications (Phase 2) ----------
 exports.api.post('/members/:id/telegram-link', (0, auth_1.requireFeature)('telegram'), (0, async_1.asyncHandler)(telegram.memberLink));
@@ -324,6 +418,9 @@ exports.api.get('/telegram/status', (0, async_1.asyncHandler)(telegram.status));
 exports.api.get('/notifications', (0, async_1.asyncHandler)(telegram.notifications));
 // ---------- payments / dashboard ----------
 exports.api.get('/payments', (0, async_1.asyncHandler)(payments.list));
+// Before /payments/:id would be, if one is ever added — a literal path must
+// win over a parameter.
+exports.api.get('/payments/summary', (0, async_1.asyncHandler)(payments.summary));
 exports.api.get('/dashboard/stats', (0, async_1.asyncHandler)(dashboard.stats));
 exports.api.get('/dashboard/today', (0, async_1.asyncHandler)(dashboard.today));
 // ---------- feedback (emailed to product owner) ----------

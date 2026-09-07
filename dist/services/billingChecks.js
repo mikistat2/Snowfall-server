@@ -8,6 +8,8 @@ exports.priceFor = priceFor;
 exports.resolveCycle = resolveCycle;
 exports.computePeriod = computePeriod;
 exports.runChecks = runChecks;
+exports.grantsFor = grantsFor;
+exports.grantPatch = grantPatch;
 /**
  * The check engine: everything that decides whether a receipt is acceptable.
  *
@@ -478,6 +480,45 @@ function runChecks(input) {
         passed: !firstFailure,
         failureReason: firstFailure?.message ?? null,
         grantedCycle: firstFailure ? null : grantedCycle,
+    };
+}
+// ------------------------------------------------------- plan entitlements --
+/**
+ * The features a paid plan switches ON for a gym that does not already have
+ * them.
+ *
+ * **Grant-only, deliberately.** A plan row says what a gym bought; it is not a
+ * statement of what the gym is allowed to keep. Every gym on the platform
+ * predates these columns and defaults to BOTH features allowed, so mirroring a
+ * plan exactly would silently revoke the camera from everyone still on
+ * Regular — including gyms that have run door check-ins for months.
+ *
+ * Taking a feature away therefore stays a manual decision in the platform
+ * panel, where it is deliberate, carries a note to the owner and lands in the
+ * audit log. See the 20260901000012 migration, which added these columns inert
+ * for exactly this reason.
+ */
+function grantsFor(gym, plan) {
+    if (!plan)
+        return [];
+    const granted = [];
+    if (plan.camera && !gym.camera_allowed)
+        granted.push('camera');
+    if (plan.telegram && !gym.telegram_allowed)
+        granted.push('telegram');
+    return granted;
+}
+/**
+ * `grantsFor` as a column patch, folded into the payment's own transaction so
+ * a rolled-back payment cannot leave a gym holding features it did not buy.
+ *
+ * Only ever contains `true`. An empty object when nothing was granted, which
+ * spreads into an update as no change at all.
+ */
+function grantPatch(granted) {
+    return {
+        ...(granted.includes('camera') ? { camera_allowed: true } : {}),
+        ...(granted.includes('telegram') ? { telegram_allowed: true } : {}),
     };
 }
 //# sourceMappingURL=billingChecks.js.map

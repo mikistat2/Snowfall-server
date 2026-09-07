@@ -46,6 +46,7 @@ const userModel = __importStar(require("../models/userModel"));
 const notificationModel = __importStar(require("../models/notificationModel"));
 const botManager = __importStar(require("../telegram/botManager"));
 const errors_1 = require("../utils/errors");
+const pagination_1 = require("../utils/pagination");
 function requireRunningBot(gymId) {
     const status = botManager.getStatus(gymId);
     if (!status.running || !status.username) {
@@ -85,9 +86,11 @@ async function status(req, res) {
     });
 }
 async function notifications(req, res) {
-    res.json(await notificationModel.list(req.auth.gymId, {
+    const result = await notificationModel.list(req.auth.gymId, {
         type: req.query.type,
         status: req.query.status,
-    }));
+        ...(0, pagination_1.pageParams)(req),
+    });
+    res.json((0, pagination_1.pagedBody)(req, result));
 }
 //# sourceMappingURL=telegramController.js.map

@@ -3,7 +3,8 @@ import http from 'http';
 import https from 'https';
 import { verifyAccessToken } from '../utils/jwt';
 import { isPrivateHttpUrl } from '../utils/net';
-import { badRequest } from '../utils/errors';
+import { badRequest, unauthorized } from '../utils/errors';
+import * as userModel from '../models/userModel';
 
 /**
  * Streams a LAN camera (e.g. the IP Webcam Android app's MJPEG endpoint,
@@ -13,7 +14,13 @@ import { badRequest } from '../utils/errors';
  * access token is passed as a query parameter instead.
  */
 export async function cameraProxy(req: Request, res: Response): Promise<void> {
-  verifyAccessToken(String(req.query.token ?? '')); // throws 401 if missing/invalid
+  const payload = verifyAccessToken(String(req.query.token ?? '')); // throws 401 if missing/invalid
+  // This is the one authenticated route that sits outside blockFrozenGym, so
+  // it has to make the same check itself: a removed account must not keep
+  // opening camera streams for the remaining life of its access token. Only
+  // new connections are checked — a stream already flowing runs until the tab
+  // closes, which is bounded by the browser rather than by us.
+  if (!(await userModel.isLive(payload.sub))) throw unauthorized('Your account has been removed');
 
   const url = String(req.query.url ?? '');
   if (!isPrivateHttpUrl(url)) {

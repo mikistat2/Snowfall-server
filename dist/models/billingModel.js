@@ -140,7 +140,16 @@ async function listAll(filter = {}) {
     const base = (0, knex_1.db)('billing_payments as bp')
         .join('gyms as g', 'g.id', 'bp.gym_id')
         .leftJoin('billing_plans as pl', 'pl.id', 'bp.billing_plan_id')
-        .leftJoin((0, knex_1.db)('users').select('gym_id').min('email as email').where({ role: 'owner' }).groupBy('gym_id').as('o'), 'o.gym_id', 'g.id');
+        .leftJoin(
+    // Removed owners excluded: this column is the gym's contact address on
+    // the payments screen, and a closed account is not who to chase.
+    (0, knex_1.db)('users')
+        .select('gym_id')
+        .min('email as email')
+        .where({ role: 'owner' })
+        .whereNull('deleted_at')
+        .groupBy('gym_id')
+        .as('o'), 'o.gym_id', 'g.id');
     if (filter.status)
         base.where('bp.status', filter.status);
     if (filter.search?.trim()) {

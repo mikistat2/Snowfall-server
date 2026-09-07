@@ -86,7 +86,7 @@ async function renew(input) {
             gym_id: input.gymId,
             member_id: input.memberId,
             subscription_id: subscriptionId,
-            amount: input.amount ?? Number(plan.price),
+            amount: input.amount,
             method: input.method,
             marked_by: input.userId,
             note: input.note ?? null,

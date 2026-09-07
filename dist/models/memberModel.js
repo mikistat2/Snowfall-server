@@ -15,8 +15,10 @@ exports.addDescriptors = addDescriptors;
 exports.clearDescriptors = clearDescriptors;
 exports.setLinkToken = setLinkToken;
 exports.findByLinkToken = findByLinkToken;
+exports.findByTelegramChatId = findByTelegramChatId;
 exports.bindTelegram = bindTelegram;
 exports.descriptorCount = descriptorCount;
+exports.bumpAbsenceNudgeCount = bumpAbsenceNudgeCount;
 const knex_1 = require("../db/knex");
 /**
  * `limit`/`offset` are optional: the desktop table asks for everything, the
@@ -35,7 +37,14 @@ async function listByGym(gymId, filter = {}) {
         .orderBy(['member_id', { column: 'expires_at', order: 'desc' }])
         .as('s'), 's.member_id', 'm.id')
         .leftJoin('plans as p', 'p.id', 's.plan_id')
-        .select('m.*', 'p.name as plan_name', 's.expires_at')
+        // Explicit columns, not m.* — the roster is the largest response this API
+        // serves, and `m.*` drags along every column the list has no use for. The
+        // one that matters is `photo_url`, the legacy inline base64 picture: at
+        // ~5 KB per member it made a 100-member roster a half-megabyte response,
+        // repeated on every load and every keystroke in the search box. Photos now
+        // travel as a URL to a cached object, and the bytes are fetched once per
+        // device instead of once per request.
+        .select('m.id', 'm.full_name', 'm.phone', 'm.sex', 'm.telegram_chat_id', 'm.status', 'm.joined_at', 'm.archived_at', 'm.photo_key', 'm.photo_version', 'm.photo_source', 'p.name as plan_name', 's.expires_at')
         .orderBy('m.full_name');
     if (filter.status)
         q.andWhere('m.status', filter.status);
@@ -180,6 +189,21 @@ async function setLinkToken(gymId, memberId, token) {
 async function findByLinkToken(token) {
     return (0, knex_1.db)('members').where({ telegram_link_token: token }).first();
 }
+/**
+ * The member behind a Telegram chat, for commands the member sends us.
+ *
+ * Scoped to the gym whose bot received the message: one person can be a member
+ * of two gyms running two bots from the same Telegram account, and each bot
+ * must answer about its own gym only. Archived members are excluded — they
+ * still hold their chat id, and someone removed from the gym should not keep
+ * querying it.
+ */
+async function findByTelegramChatId(gymId, chatId) {
+    return (0, knex_1.db)('members')
+        .where({ gym_id: gymId, telegram_chat_id: chatId })
+        .whereNull('archived_at')
+        .first();
+}
 async function bindTelegram(memberId, chatId, username) {
     await (0, knex_1.db)('members')
         .where({ id: memberId })
@@ -188,5 +212,14 @@ async function bindTelegram(memberId, chatId, username) {
 async function descriptorCount(memberId) {
     const row = await (0, knex_1.db)('face_descriptors').where({ member_id: memberId }).count('id as count').first();
     return Number(row?.count ?? 0);
+}
+/**
+ * Advances the absence-nudge template rotation. Called once per nudge
+ * dispatched, including the ones that failed to deliver or had no chat id —
+ * matching the notification-row count this replaced, so the rotation a member
+ * sees does not change.
+ */
+async function bumpAbsenceNudgeCount(memberId) {
+    await (0, knex_1.db)('members').where({ id: memberId }).increment('absence_nudge_count', 1);
 }
 //# sourceMappingURL=memberModel.js.map

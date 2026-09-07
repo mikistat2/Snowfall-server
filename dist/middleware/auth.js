@@ -44,6 +44,7 @@ exports.requireActiveSubscription = requireActiveSubscription;
 const jwt_1 = require("../utils/jwt");
 const errors_1 = require("../utils/errors");
 const gymModel = __importStar(require("../models/gymModel"));
+const userModel = __importStar(require("../models/userModel"));
 const billingModel = __importStar(require("../models/billingModel"));
 const billingService = __importStar(require("../services/billingService"));
 const platformAdminModel = __importStar(require("../models/platformAdminModel"));
@@ -109,16 +110,31 @@ function requirePlatformPerm(perm) {
     };
 }
 /**
- * Blocks every tenant API call once the platform admin freezes the gym.
- * One indexed PK lookup per request — negligible at this scale.
+ * Blocks every tenant API call once the platform admin freezes the gym, or
+ * once the caller's own staff account is removed.
+ *
+ * The account check has to live here because access tokens are stateless:
+ * requireAuth only verifies a signature, so a removed employee would otherwise
+ * keep full access until their token expired — up to 15 minutes, and the whole
+ * point of removing an account is usually that the next 15 minutes matter.
+ * Their refresh token is revoked at removal, so this is the last door left.
+ *
+ * Two indexed PK lookups per request, issued together so they cost one
+ * round-trip of latency rather than two.
  */
 async function blockFrozenGym(req, _res, next) {
-    const gym = await gymModel.findById(req.auth.gymId);
+    const [gym, live] = await Promise.all([
+        gymModel.findById(req.auth.gymId),
+        userModel.isLive(req.auth.sub),
+    ]);
     if (!gym)
         throw (0, errors_1.unauthorized)('Gym no longer exists');
+    if (!live) {
+        throw (0, errors_1.unauthorized)('Your account has been removed. Contact your gym owner if this is unexpected.');
+    }
     req.gym = gym;
     if (gym.status === 'frozen') {
-        throw (0, errors_1.forbidden)('This gym account has been frozen by the platform. Please contact support.', 'GYM_FROZEN');
+        throw (0, errors_1.forbidden)(gymModel.frozenMessage(gym), 'GYM_FROZEN');
     }
     if (gym.status === 'pending') {
         throw (0, errors_1.forbidden)('This gym registration has not been approved yet.', 'GYM_PENDING');

@@ -105,6 +105,7 @@ async function deliver(
     if (transport) {
       const owners: { name: string; email: string }[] = await db('users')
         .where({ gym_id: gymId, role: 'owner' })
+        .whereNull('deleted_at')
         .select('name', 'email');
       for (const owner of owners) {
         await transport.sendMail({
@@ -167,6 +168,52 @@ export async function notifyFeatureChange(
       `To ask about this, contact the platform administrator at ${env.platformAdmin.email}.`;
 
   return deliver(gymId, subject, text, { platform_action: 'feature', feature, allowed });
+}
+
+/**
+ * One of a gym's staff accounts was removed by the platform admin.
+ *
+ * Sent to the gym's remaining owners, not to the person removed — they get the
+ * plain refusal from the app itself the moment they try anything. The wording
+ * leads with what is NOT gone, because "we removed an account" reads as "we
+ * deleted their work", and the payments and check-ins they recorded are still
+ * there under their name.
+ *
+ * Send this AFTER the removal, never before: a removed owner is filtered out
+ * of the recipient list, and sending first would mail the news to the very
+ * account being closed.
+ */
+export async function notifyStaffRemoved(
+  gymId: number,
+  gymName: string,
+  staff: { name: string; email: string; role: 'owner' | 'staff' },
+  note?: string,
+): Promise<AlertResult> {
+  const reason = note?.trim() ? `Reason: ${note.trim()}
+
+` : '';
+  const subject = 'A staff account was removed from your gym';
+  const text =
+    `⚠️ The ${staff.role === 'owner' ? 'owner' : 'staff'} account for ${staff.name} ` +
+    `(${staff.email}) has been removed from "${gymName}" on Snowfall by the platform administrator.
+
+` +
+    reason +
+    `They can no longer sign in, and any session they had open has been ended.
+
+` +
+    `Nothing they recorded has been deleted. Every payment they marked, guest they signed in and ` +
+    `check-in they handled stays in your records, still under their name.
+
+` +
+    `If this was a mistake the account can be restored — contact the platform administrator at ` +
+    `${env.platformAdmin.email}.`;
+
+  return deliver(gymId, subject, text, {
+    platform_action: 'staff_removed',
+    staff_email: staff.email,
+    staff_role: staff.role,
+  });
 }
 
 /** Email the platform admin (you) — new registrations, expiring subscriptions, … */
@@ -269,6 +316,7 @@ export async function runOwnerRenewalReminders(): Promise<void> {
       if (!transport) continue;
       const owners: { name: string; email: string }[] = await db('users')
         .where({ gym_id: gym.id, role: 'owner' })
+        .whereNull('deleted_at')
         .select('name', 'email');
       for (const owner of owners) {
         await transport.sendMail({

@@ -51,6 +51,7 @@ const paymentModel = __importStar(require("../models/paymentModel"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
 const statusService_1 = require("./statusService");
 const checkInService_1 = require("./checkInService");
+const memberPhotoService = __importStar(require("./memberPhotoService"));
 const dates_1 = require("../utils/dates");
 const ethiopian_1 = require("../utils/ethiopian");
 const errors_1 = require("../utils/errors");
@@ -86,7 +87,7 @@ async function enroll(input) {
             gym_id: input.gymId,
             member_id: member.id,
             subscription_id: subscription.id,
-            amount: input.payment.amount ?? Number(plan.price),
+            amount: input.payment.amount,
             method: input.payment.method,
             marked_by: input.userId,
             note: input.payment.note ?? 'Enrollment',
@@ -171,7 +172,7 @@ async function enrollPrevious(input) {
                 gym_id: input.gymId,
                 member_id: member.id,
                 subscription_id: subscription.id,
-                amount: input.payment.amount ?? Number(plan.price),
+                amount: input.payment.amount,
                 method: input.payment.method,
                 marked_by: input.userId,
                 note: input.payment.note ?? 'Previous member (paper record)',
@@ -332,7 +333,16 @@ async function detail(gymId, memberId) {
         Promise.resolve().then(() => __importStar(require('../models/checkInModel'))).then((m) => m.listRecentByMember(memberId)),
         memberModel.descriptorCount(memberId),
     ]);
-    return { member, subscriptions, payments, check_ins: checkIns, descriptor_count: descriptors };
+    // One member, so the legacy inline photo is passed through as a fallback —
+    // ~5 KB on a page that is already loading their whole history. The roster
+    // deliberately does not do this; see memberPhotoService.photoUrls.
+    return {
+        member: { ...member, ...memberPhotoService.photoUrls(member) },
+        subscriptions,
+        payments,
+        check_ins: checkIns,
+        descriptor_count: descriptors,
+    };
 }
 /**
  * Admin correction of an existing member.

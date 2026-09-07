@@ -13,7 +13,8 @@ import * as billing from '../controllers/platformBillingController';
  *    platform settings and managing sub-admins;
  *  - SUB-ADMINS (platform_admins table): read the dashboard, plus whatever
  *    per-account permissions the owner granted (approve/freeze/renew/export).
- *    They can never delete gyms — there is no permission for it.
+ *    They can never delete gyms or gym staff accounts — there is no permission
+ *    for either.
  * Authenticated with a dedicated 'platform' JWT — completely separate from
  * gym staff accounts.
  */
@@ -127,6 +128,27 @@ adminRouter.delete(
   requirePlatformOwner,
   validate(z.object({ confirm_name: z.string(), note: z.string().max(1000).optional() })),
   asyncHandler(admin.deleteGym),
+);
+
+// Individual staff accounts of a tenant. Owner-only for the same reason gym
+// deletion is: this reaches inside somebody else's gym and takes an account
+// away, which is not one of the day-to-day sub-admin permissions.
+//
+// Removal is reversible (the row is tombstoned, not deleted) — hence a restore
+// route, and hence no typed-name confirmation like the gym delete above.
+adminRouter.delete(
+  '/gyms/:id/staff/:userId',
+  requirePlatformOwner,
+  // The reason reaches the gym's owners verbatim. Optional, and the panel
+  // asks for one anyway — an account disappearing with no explanation is the
+  // fastest way to a support call.
+  validate(z.object({ note: z.string().max(1000).optional() }).default({})),
+  asyncHandler(admin.deleteStaff),
+);
+adminRouter.post(
+  '/gyms/:id/staff/:userId/restore',
+  requirePlatformOwner,
+  asyncHandler(admin.restoreStaff),
 );
 
 // ---------------------------------------------------------------- billing --
