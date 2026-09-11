@@ -303,9 +303,23 @@ exports.api.get('/auth/registration-mode', (0, async_1.asyncHandler)(async (_req
         billingModel.getSettings(),
     ]);
     const cycles = billingService.enabledCycles(billing);
+    /**
+     * With the paywall off, signing up buys nothing: registerGym stamps every
+     * new gym `comped`, so a package chosen here would be recorded against a
+     * subscription that is never charged and never checked.
+     *
+     * Handled by sending no packages at all, rather than by hiding them in the
+     * signup form. The form already renders nothing when the list is empty, so
+     * one server-side rule covers every client — including the Android builds
+     * already installed, which cannot be updated to hide a section they still
+     * think exists.
+     */
+    const sellingPackages = billing.payments_required;
     res.json({
         trial_mode,
         trial_days,
+        /** False → the signup form shows no packages and no billing period. */
+        payments_required: billing.payments_required,
         /**
          * Which cycles the registration page may offer. A client that predates
          * this field ignores it and shows both, which is what it did before.
@@ -322,19 +336,21 @@ exports.api.get('/auth/registration-mode', (0, async_1.asyncHandler)(async (_req
          * the monthly prices next, and keying the filter to that column would
          * then empty the registration page of every package it still sells.
          */
-        plans: plans
-            .filter((p) => cycles.some((c) => Number(c === 'MONTHLY' ? p.monthly_price : p.yearly_price) > 0))
-            .map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            monthly_price: p.monthly_price,
-            yearly_price: p.yearly_price,
-            currency: p.currency,
-            camera: p.camera,
-            telegram: p.telegram,
-            setup_fee: p.setup_fee,
-        })),
+        plans: !sellingPackages
+            ? []
+            : plans
+                .filter((p) => cycles.some((c) => Number(c === 'MONTHLY' ? p.monthly_price : p.yearly_price) > 0))
+                .map((p) => ({
+                id: p.id,
+                name: p.name,
+                description: p.description,
+                monthly_price: p.monthly_price,
+                yearly_price: p.yearly_price,
+                currency: p.currency,
+                camera: p.camera,
+                telegram: p.telegram,
+                setup_fee: p.setup_fee,
+            })),
     });
 }));
 exports.api.post('/auth/register-gym', authLimiter, (0, validate_1.validate)(registerGymSchema), (0, async_1.asyncHandler)(auth.registerGym));

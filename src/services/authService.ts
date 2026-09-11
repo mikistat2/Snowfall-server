@@ -55,11 +55,31 @@ export async function registerGym(input: {
   const existing = await userModel.findByEmail(input.owner.email);
   if (existing) throw conflict('An account with this email already exists');
 
+  /**
+   * Stamped at registration, never evaluated retroactively: a gym that signs
+   * up while the paywall is OFF keeps its access forever, even after the
+   * switch is turned back on. Turning payments on must only affect people who
+   * sign up afterwards — otherwise a free launch turns into a mass lockout the
+   * day you start charging.
+   */
+  const billing = await billingModel.getSettings();
+  const comped = !billing.payments_required;
+
+  /**
+   * With the paywall off we are not selling packages, so a package id in the
+   * request is ignored rather than honoured. The signup form does not offer
+   * one — but an Android build installed before it stopped offering them still
+   * will, and recording that gym against a package it was never charged for
+   * would put a plan name in the platform panel that means nothing.
+   *
+   * Ignored, not rejected: their registration must still succeed.
+   */
+  const plan =
+    comped || !input.planId ? null : ((await billingModel.findPlan(input.planId)) ?? null);
   // Checked rather than trusted: the id arrives from an unauthenticated form,
   // and a retired plan must not be signed up for just because a stale tab
   // still offers it.
-  const plan = input.planId ? await billingModel.findPlan(input.planId) : null;
-  if (input.planId && (!plan || !plan.is_active)) {
+  if (!comped && input.planId && (!plan || !plan.is_active)) {
     throw badRequest('That package is no longer available. Please pick another.');
   }
 
@@ -76,16 +96,6 @@ export async function registerGym(input: {
         subscription_ends_at: new Date(Date.now() + platform.trial_days * 86_400_000),
       }
     : { status: 'pending' as const };
-
-  /**
-   * Stamped at registration, never evaluated retroactively: a gym that signs
-   * up while the paywall is OFF keeps its access forever, even after the
-   * switch is turned back on. Turning payments on must only affect people who
-   * sign up afterwards — otherwise a free launch turns into a mass lockout the
-   * day you start charging.
-   */
-  const billing = await billingModel.getSettings();
-  const comped = !billing.payments_required;
 
   const { gym, user } = await db.transaction(async (trx) => {
     const gym = await gymModel.create(

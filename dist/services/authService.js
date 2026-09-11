@@ -71,11 +71,29 @@ async function registerGym(input) {
     const existing = await userModel.findByEmail(input.owner.email);
     if (existing)
         throw (0, errors_1.conflict)('An account with this email already exists');
+    /**
+     * Stamped at registration, never evaluated retroactively: a gym that signs
+     * up while the paywall is OFF keeps its access forever, even after the
+     * switch is turned back on. Turning payments on must only affect people who
+     * sign up afterwards — otherwise a free launch turns into a mass lockout the
+     * day you start charging.
+     */
+    const billing = await billingModel.getSettings();
+    const comped = !billing.payments_required;
+    /**
+     * With the paywall off we are not selling packages, so a package id in the
+     * request is ignored rather than honoured. The signup form does not offer
+     * one — but an Android build installed before it stopped offering them still
+     * will, and recording that gym against a package it was never charged for
+     * would put a plan name in the platform panel that means nothing.
+     *
+     * Ignored, not rejected: their registration must still succeed.
+     */
+    const plan = comped || !input.planId ? null : ((await billingModel.findPlan(input.planId)) ?? null);
     // Checked rather than trusted: the id arrives from an unauthenticated form,
     // and a retired plan must not be signed up for just because a stale tab
     // still offers it.
-    const plan = input.planId ? await billingModel.findPlan(input.planId) : null;
-    if (input.planId && (!plan || !plan.is_active)) {
+    if (!comped && input.planId && (!plan || !plan.is_active)) {
         throw (0, errors_1.badRequest)('That package is no longer available. Please pick another.');
     }
     const passwordHash = await bcryptjs_1.default.hash(input.owner.password, 10);
@@ -90,15 +108,6 @@ async function registerGym(input) {
             subscription_ends_at: new Date(Date.now() + platform.trial_days * 86_400_000),
         }
         : { status: 'pending' };
-    /**
-     * Stamped at registration, never evaluated retroactively: a gym that signs
-     * up while the paywall is OFF keeps its access forever, even after the
-     * switch is turned back on. Turning payments on must only affect people who
-     * sign up afterwards — otherwise a free launch turns into a mass lockout the
-     * day you start charging.
-     */
-    const billing = await billingModel.getSettings();
-    const comped = !billing.payments_required;
     const { gym, user } = await knex_1.db.transaction(async (trx) => {
         const gym = await gymModel.create({
             ...input.gym,
@@ -107,7 +116,13 @@ async function registerGym(input) {
             billing_plan_id: plan?.id ?? null,
             // Only meaningful alongside a plan — a cycle with nothing to bill is
             // not an intention, it is a stray field.
-            billing_cycle: plan ? (input.cycle ?? 'MONTHLY') : null,
+            //
+            // Yearly is the fallback, matching what the signup form now selects.
+            // It is only reached when a client sends a plan and no cycle at all,
+            // which today means an old build; defaulting those to monthly while
+            // every current screen shows yearly would record the wrong intent for
+            // exactly the gyms whose choice we cannot see.
+            billing_cycle: plan ? (input.cycle ?? 'YEARLY') : null,
             ...UNPAID_ENTITLEMENTS,
         }, trx);
         const user = await userModel.create({
