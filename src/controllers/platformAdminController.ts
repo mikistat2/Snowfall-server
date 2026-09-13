@@ -8,6 +8,7 @@ import * as platformModel from '../models/platformModel';
 import * as platformAdminModel from '../models/platformAdminModel';
 import * as gymModel from '../models/gymModel';
 import * as userModel from '../models/userModel';
+import * as staffActivityModel from '../models/staffActivityModel';
 import * as refreshTokenModel from '../models/refreshTokenModel';
 import * as featureNoticeModel from '../models/featureNoticeModel';
 import * as memberModel from '../models/memberModel';
@@ -76,10 +77,18 @@ export async function listGyms(req: Request, res: Response): Promise<void> {
 
 export async function gymDetail(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
-  const [gyms, staff] = await Promise.all([platformModel.listGyms(), platformModel.gymStaff(id)]);
+  if (!Number.isInteger(id)) throw notFound('Gym not found');
+  const [gyms, staff, days, staffToday] = await Promise.all([
+    platformModel.listGyms(),
+    platformModel.gymStaff(id),
+    staffActivityModel.recentDays(id, 7),
+    staffActivityModel.staffToday(id),
+  ]);
   const gym = gyms.find((g) => g.id === id);
   if (!gym) throw notFound('Gym not found');
-  res.json({ ...gym, staff });
+  // The list carries today's totals; the detail adds the week behind them and
+  // who, individually, has or has not opened the app today.
+  res.json({ ...gym, staff, activity: { days, staff_today: staffToday } });
 }
 
 export async function freezeGym(req: Request, res: Response): Promise<void> {

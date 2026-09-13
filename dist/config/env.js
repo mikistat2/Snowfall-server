@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.env = void 0;
+exports.env = exports.NATIVE_ORIGINS = void 0;
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 function optional(name, fallback) {
@@ -21,7 +21,7 @@ function optional(name, fallback) {
  * one (set via server.androidScheme). Both are listed so a future iOS build
  * needs no server change.
  */
-const NATIVE_ORIGINS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
+exports.NATIVE_ORIGINS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
 exports.env = {
     nodeEnv: optional('NODE_ENV', 'development'),
     port: Number(optional('PORT', '4000')),
@@ -34,7 +34,7 @@ exports.env = {
             .split(',')
             .map((origin) => origin.trim())
             .filter(Boolean),
-        ...NATIVE_ORIGINS,
+        ...exports.NATIVE_ORIGINS,
     ])),
     /**
      * Shared secret for POST /tasks/daily, the external scheduler's trigger.

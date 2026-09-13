@@ -15,6 +15,7 @@ exports.deleteGym = deleteGym;
 exports.claimDailyRun = claimDailyRun;
 const knex_1 = require("../db/knex");
 const billingChecks_1 = require("../services/billingChecks");
+const staffActivityModel_1 = require("./staffActivityModel");
 /**
  * Cross-tenant queries for the platform super-admin. Nothing here is reachable
  * by gym accounts — the /admin routes are guarded by requirePlatformAdmin.
@@ -85,7 +86,12 @@ async function listGyms(search) {
       (SELECT COALESCE(sum(p.amount), 0)::text FROM payments p
         WHERE p.gym_id = g.id AND p.created_at > now() - interval '30 days'
           AND p.voided_at IS NULL)                                                    AS revenue_30d,
-      (SELECT max(c.checked_in_at) FROM check_ins c WHERE c.gym_id = g.id)            AS last_checkin_at
+      (SELECT max(c.checked_in_at) FROM check_ins c WHERE c.gym_id = g.id)            AS last_checkin_at,
+      act.visits_today, act.app_visits_today, act.web_visits_today, act.active_staff_today,
+      (SELECT count(*)::int FROM members m
+        WHERE m.gym_id = g.id
+          AND (m.created_at AT TIME ZONE 'Africa/Addis_Ababa')::date = ${staffActivityModel_1.ADDIS_TODAY}) AS members_added_today,
+      la.last_active_at, la.last_active_by_name, la.last_active_by_role
     FROM gyms g
     LEFT JOIN LATERAL (
       SELECT u.name, u.email, u.phone FROM users u
@@ -93,6 +99,27 @@ async function listGyms(search) {
       ORDER BY u.id ASC LIMIT 1
     ) o ON TRUE
     LEFT JOIN billing_plans pl ON pl.id = g.billing_plan_id
+    -- One pass over today's rows for all four counts, rather than four
+    -- correlated subqueries each rescanning them. An aggregate with no GROUP BY
+    -- always returns a row, so a gym nobody opened today gets zeros, not NULLs.
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(sum(a.visits), 0)::int                                  AS visits_today,
+             COALESCE(sum(a.visits) FILTER (WHERE a.source = 'app'), 0)::int  AS app_visits_today,
+             COALESCE(sum(a.visits) FILTER (WHERE a.source = 'web'), 0)::int  AS web_visits_today,
+             count(DISTINCT a.user_id)::int                                   AS active_staff_today
+        FROM staff_activity_days a
+       WHERE a.gym_id = g.id AND a.day = ${staffActivityModel_1.ADDIS_TODAY}
+    ) act ON TRUE
+    -- The single most recent activity row and the person behind it, so the
+    -- panel can say "5m ago · Meron" rather than a time with no one attached.
+    LEFT JOIN LATERAL (
+      SELECT a.last_seen_at AS last_active_at, u.name AS last_active_by_name, u.role AS last_active_by_role
+        FROM staff_activity_days a
+        JOIN users u ON u.id = a.user_id
+       WHERE a.gym_id = g.id
+       ORDER BY a.last_seen_at DESC
+       LIMIT 1
+    ) la ON TRUE
     ${where}
     ORDER BY g.created_at DESC
   `, params);

@@ -18,7 +18,7 @@ function optional(name: string, fallback: string): string {
  * one (set via server.androidScheme). Both are listed so a future iOS build
  * needs no server change.
  */
-const NATIVE_ORIGINS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
+export const NATIVE_ORIGINS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
 
 export const env = {
   nodeEnv: optional('NODE_ENV', 'development'),

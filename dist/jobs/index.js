@@ -57,6 +57,7 @@ const notificationModel = __importStar(require("../models/notificationModel"));
 const botManager = __importStar(require("../telegram/botManager"));
 const platformAlert = __importStar(require("../services/platformAlertService"));
 const platformModel = __importStar(require("../models/platformModel"));
+const staffActivityModel = __importStar(require("../models/staffActivityModel"));
 /**
  * Jobs:
  *  - 00:05 daily: recompute every member's status per gym.
@@ -101,6 +102,11 @@ const TIMEZONE = 'Africa/Addis_Ababa';
 const EVENT_RETENTION_DAYS = 90;
 const AUDIT_RETENTION_DAYS = 7;
 const NOTIFICATION_RETENTION_DAYS = 7;
+/**
+ * A year and a little over, so "is this gym using the system less than it was
+ * last season" stays answerable. At one row per person per day it is small.
+ */
+const STAFF_ACTIVITY_RETENTION_DAYS = 400;
 function startJobs() {
     if (database_1.dbAutosuspends)
         startDbKeepAlive();
@@ -201,8 +207,9 @@ async function runMaintenance() {
         const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
         const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
         const notes = await notificationModel.purgeOlderThan(NOTIFICATION_RETENTION_DAYS);
+        const activity = await staffActivityModel.purgeOlderThan(STAFF_ACTIVITY_RETENTION_DAYS);
         // eslint-disable-next-line no-console
-        console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications`);
+        console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications, ${activity} activity days`);
     }
     catch (err) {
         // eslint-disable-next-line no-console

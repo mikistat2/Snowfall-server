@@ -68,6 +68,7 @@ const platformModel = __importStar(require("../models/platformModel"));
 const platformAdminModel = __importStar(require("../models/platformAdminModel"));
 const gymModel = __importStar(require("../models/gymModel"));
 const userModel = __importStar(require("../models/userModel"));
+const staffActivityModel = __importStar(require("../models/staffActivityModel"));
 const refreshTokenModel = __importStar(require("../models/refreshTokenModel"));
 const featureNoticeModel = __importStar(require("../models/featureNoticeModel"));
 const memberModel = __importStar(require("../models/memberModel"));
@@ -129,11 +130,20 @@ async function listGyms(req, res) {
 }
 async function gymDetail(req, res) {
     const id = Number(req.params.id);
-    const [gyms, staff] = await Promise.all([platformModel.listGyms(), platformModel.gymStaff(id)]);
+    if (!Number.isInteger(id))
+        throw (0, errors_1.notFound)('Gym not found');
+    const [gyms, staff, days, staffToday] = await Promise.all([
+        platformModel.listGyms(),
+        platformModel.gymStaff(id),
+        staffActivityModel.recentDays(id, 7),
+        staffActivityModel.staffToday(id),
+    ]);
     const gym = gyms.find((g) => g.id === id);
     if (!gym)
         throw (0, errors_1.notFound)('Gym not found');
-    res.json({ ...gym, staff });
+    // The list carries today's totals; the detail adds the week behind them and
+    // who, individually, has or has not opened the app today.
+    res.json({ ...gym, staff, activity: { days, staff_today: staffToday } });
 }
 async function freezeGym(req, res) {
     const id = Number(req.params.id);

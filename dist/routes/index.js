@@ -44,6 +44,7 @@ const async_1 = require("../utils/async");
 const validate_1 = require("../middleware/validate");
 const multer_1 = __importDefault(require("multer"));
 const auth_1 = require("../middleware/auth");
+const activity_1 = require("../middleware/activity");
 const pagination_1 = require("../utils/pagination");
 const admin_1 = require("./admin");
 const auth = __importStar(require("../controllers/authController"));
@@ -365,6 +366,9 @@ exports.api.use('/admin', admin_1.adminRouter);
 // everything below requires a logged-in staff member of a non-frozen gym
 exports.api.use(auth_1.requireAuth);
 exports.api.use((0, async_1.asyncHandler)(auth_1.blockFrozenGym));
+// Usage counts for the platform panel. After blockFrozenGym (a live account of
+// an approved gym) and before the paywall (an unpaid gym still counts).
+exports.api.use(activity_1.trackStaffActivity);
 // ---------- billing (deliberately NOT behind the paywall) ----------
 // An unpaid gym is still signed in: it must be able to see what it owes and
 // pay it. Everything after this block is gated on an active subscription.

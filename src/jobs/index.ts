@@ -14,6 +14,7 @@ import * as notificationModel from '../models/notificationModel';
 import * as botManager from '../telegram/botManager';
 import * as platformAlert from '../services/platformAlertService';
 import * as platformModel from '../models/platformModel';
+import * as staffActivityModel from '../models/staffActivityModel';
 
 /**
  * Jobs:
@@ -63,6 +64,11 @@ const TIMEZONE = 'Africa/Addis_Ababa';
 const EVENT_RETENTION_DAYS = 90;
 const AUDIT_RETENTION_DAYS = 7;
 const NOTIFICATION_RETENTION_DAYS = 7;
+/**
+ * A year and a little over, so "is this gym using the system less than it was
+ * last season" stays answerable. At one row per person per day it is small.
+ */
+const STAFF_ACTIVITY_RETENTION_DAYS = 400;
 
 export function startJobs(): void {
   if (dbAutosuspends) startDbKeepAlive();
@@ -167,8 +173,11 @@ export async function runMaintenance(): Promise<void> {
     const events = await eventModel.purgeOlderThan(EVENT_RETENTION_DAYS);
     const audits = await auditLogModel.purgeOlderThan(AUDIT_RETENTION_DAYS);
     const notes = await notificationModel.purgeOlderThan(NOTIFICATION_RETENTION_DAYS);
+    const activity = await staffActivityModel.purgeOlderThan(STAFF_ACTIVITY_RETENTION_DAYS);
     // eslint-disable-next-line no-console
-    console.log(`[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications`);
+    console.log(
+      `[jobs] retention prune: ${events} events, ${audits} audit logs, ${notes} notifications, ${activity} activity days`,
+    );
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[jobs] retention prune failed', err);
