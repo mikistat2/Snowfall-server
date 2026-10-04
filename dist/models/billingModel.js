@@ -74,8 +74,17 @@ async function getSettings(trx = knex_1.db) {
     return { ...SETTINGS_DEFAULTS, ...(row ?? {}) };
 }
 async function updateSettings(patch) {
-    await (0, knex_1.db)('billing_settings').update({ ...patch, updated_at: knex_1.db.fn.now() });
-    return getSettings();
+    return knex_1.db.transaction(async (trx) => {
+        const current = await trx('billing_settings')
+            .where({ id: true })
+            .forUpdate()
+            .first('payments_required');
+        if (patch.payments_required && !current?.payments_required) {
+            await trx('gyms').where({ comped: true, comped_by_admin: false }).update({ comped: false });
+        }
+        await trx('billing_settings').update({ ...patch, updated_at: trx.fn.now() });
+        return getSettings(trx);
+    });
 }
 // ---------------------------------------------------------------- plans ----
 async function listPlans(includeInactive = false) {

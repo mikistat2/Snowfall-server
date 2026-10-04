@@ -72,8 +72,19 @@ export async function getSettings(trx: Knex = db): Promise<BillingSettings> {
 }
 
 export async function updateSettings(patch: Partial<BillingSettings>): Promise<BillingSettings> {
-  await db('billing_settings').update({ ...patch, updated_at: db.fn.now() });
-  return getSettings();
+  return db.transaction(async (trx) => {
+    const current = await trx('billing_settings')
+      .where({ id: true })
+      .forUpdate()
+      .first('payments_required');
+
+    if (patch.payments_required && !current?.payments_required) {
+      await trx('gyms').where({ comped: true, comped_by_admin: false }).update({ comped: false });
+    }
+
+    await trx('billing_settings').update({ ...patch, updated_at: trx.fn.now() });
+    return getSettings(trx);
+  });
 }
 
 // ---------------------------------------------------------------- plans ----

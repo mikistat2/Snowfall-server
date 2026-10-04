@@ -89,7 +89,7 @@ export async function listAll(): Promise<GymRow[]> {
 
 /** Permanent exemption from the subscription paywall (see billingService.hasAccess). */
 export async function setComped(id: number, comped: boolean): Promise<void> {
-  await db('gyms').where({ id }).update({ comped });
+  await db('gyms').where({ id }).update({ comped, comped_by_admin: comped });
 }
 
 /**

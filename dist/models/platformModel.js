@@ -9,6 +9,7 @@ exports.setStatus = setStatus;
 exports.setNote = setNote;
 exports.setBillingPlan = setBillingPlan;
 exports.approveGym = approveGym;
+exports.approveTrialGym = approveTrialGym;
 exports.renewGym = renewGym;
 exports.setTrial = setTrial;
 exports.revokeGymSessions = revokeGymSessions;
@@ -22,8 +23,8 @@ const staffActivityModel_1 = require("./staffActivityModel");
  * by gym accounts — the /admin routes are guarded by requirePlatformAdmin.
  */
 async function getSettings() {
-    const row = await (0, knex_1.db)('platform_settings').first('trial_mode', 'trial_days');
-    return row ?? { trial_mode: false, trial_days: 30 };
+    const row = await (0, knex_1.db)('platform_settings').first('approval_required', 'trial_mode', 'trial_days');
+    return row ?? { approval_required: true, trial_mode: false, trial_days: 30 };
 }
 async function updateSettings(patch) {
     await (0, knex_1.db)('platform_settings').update({ ...patch, updated_at: knex_1.db.fn.now() });
@@ -175,6 +176,19 @@ async function approveGym(gymId, cycle = 'YEARLY') {
         is_trial: false,
     });
     return end;
+}
+/** Approve a pending registration and start its configured free trial. */
+async function approveTrialGym(gymId, days) {
+    const { rows } = await knex_1.db.raw(`
+    UPDATE gyms
+      SET status = 'active',
+          approved_at = now(),
+          subscription_ends_at = now() + (? * interval '1 day'),
+          is_trial = TRUE
+      WHERE id = ?
+      RETURNING subscription_ends_at
+  `, [days, gymId]);
+    return rows[0].subscription_ends_at;
 }
 /**
  * Extend the subscription by one month or one year.

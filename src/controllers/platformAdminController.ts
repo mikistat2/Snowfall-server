@@ -235,7 +235,7 @@ export async function updateSettings(req: Request, res: Response): Promise<void>
   res.json(await platformModel.updateSettings(req.body));
 }
 
-/** Approve a pending registration: activate + start the paid year. */
+/** Approve a pending registration, starting either its trial or paid period. */
 export async function approveGym(req: Request, res: Response): Promise<void> {
   const id = Number(req.params.id);
   const gym = await gymModel.findById(id);
@@ -244,7 +244,9 @@ export async function approveGym(req: Request, res: Response): Promise<void> {
   // The admin's choice wins; otherwise honour the cycle the gym picked when it
   // registered, and fall back to a year — which is what approval always did.
   const cycle = (req.body as { cycle?: BillingCycle }).cycle ?? gym.billing_cycle ?? 'YEARLY';
-  const ends = await platformModel.approveGym(id, cycle);
+  const ends = gym.is_trial
+    ? await platformModel.approveTrialGym(id, (await platformModel.getSettings()).trial_days)
+    : await platformModel.approveGym(id, cycle);
   const notified = await timeboxed(platformAlert.notifyGymOwners(id, gym.name, 'approve', ends.toDateString()));
   res.json({ ok: true, subscription_ends_at: ends, cycle, notified });
 }

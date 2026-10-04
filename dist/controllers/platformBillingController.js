@@ -162,9 +162,8 @@ async function recordPayment(req, res) {
     res.json(result);
 }
 /**
- * Grant or revoke a permanent exemption from the paywall. Used for gyms that
- * joined while payments were switched off, and for anyone we choose to
- * grandfather by hand.
+ * Grant or revoke a permanent exemption from the paywall for a gym explicitly
+ * selected by the platform owner.
  */
 async function setComped(req, res) {
     const gymId = Number(req.params.id);

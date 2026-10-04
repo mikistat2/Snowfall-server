@@ -101,7 +101,11 @@ adminRouter.put(
   requirePlatformOwner,
   validate(
     z
-      .object({ trial_mode: z.boolean(), trial_days: z.number().int().min(1).max(365) })
+      .object({
+        approval_required: z.boolean(),
+        trial_mode: z.boolean(),
+        trial_days: z.number().int().min(1).max(365),
+      })
       .partial(),
   ),
   asyncHandler(admin.updateSettings),

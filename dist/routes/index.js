@@ -298,16 +298,15 @@ const receiptUpload = (0, multer_1.default)({
 // public: lets the landing/registration pages advertise an active free trial
 // and show the packages a gym can sign up for.
 exports.api.get('/auth/registration-mode', (0, async_1.asyncHandler)(async (_req, res) => {
-    const [{ trial_mode, trial_days }, plans, billing] = await Promise.all([
+    const [{ approval_required, trial_mode, trial_days }, plans, billing] = await Promise.all([
         platformModel.getSettings(),
         billingModel.listPlans(),
         billingModel.getSettings(),
     ]);
     const cycles = billingService.enabledCycles(billing);
     /**
-     * With the paywall off, signing up buys nothing: registerGym stamps every
-     * new gym `comped`, so a package chosen here would be recorded against a
-     * subscription that is never charged and never checked.
+    * With the paywall off, signing up buys nothing, so package choices are
+    * hidden and ignored rather than recorded against an uncharged plan.
      *
      * Handled by sending no packages at all, rather than by hiding them in the
      * signup form. The form already renders nothing when the list is empty, so
@@ -317,6 +316,7 @@ exports.api.get('/auth/registration-mode', (0, async_1.asyncHandler)(async (_req
      */
     const sellingPackages = billing.payments_required;
     res.json({
+        approval_required,
         trial_mode,
         trial_days,
         /** False → the signup form shows no packages and no billing period. */

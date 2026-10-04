@@ -9,8 +9,8 @@ import { ADDIS_TODAY } from './staffActivityModel';
  */
 
 export async function getSettings(): Promise<PlatformSettings> {
-  const row = await db('platform_settings').first('trial_mode', 'trial_days');
-  return row ?? { trial_mode: false, trial_days: 30 };
+  const row = await db('platform_settings').first('approval_required', 'trial_mode', 'trial_days');
+  return row ?? { approval_required: true, trial_mode: false, trial_days: 30 };
 }
 
 export async function updateSettings(patch: Partial<PlatformSettings>): Promise<PlatformSettings> {
@@ -265,6 +265,23 @@ export async function approveGym(gymId: number, cycle: BillingCycle = 'YEARLY'):
     is_trial: false,
   });
   return end;
+}
+
+/** Approve a pending registration and start its configured free trial. */
+export async function approveTrialGym(gymId: number, days: number): Promise<Date> {
+  const { rows } = await db.raw(
+    `
+    UPDATE gyms
+      SET status = 'active',
+          approved_at = now(),
+          subscription_ends_at = now() + (? * interval '1 day'),
+          is_trial = TRUE
+      WHERE id = ?
+      RETURNING subscription_ends_at
+  `,
+    [days, gymId],
+  );
+  return rows[0].subscription_ends_at;
 }
 
 /**

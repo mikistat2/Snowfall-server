@@ -71,15 +71,8 @@ async function registerGym(input) {
     const existing = await userModel.findByEmail(input.owner.email);
     if (existing)
         throw (0, errors_1.conflict)('An account with this email already exists');
-    /**
-     * Stamped at registration, never evaluated retroactively: a gym that signs
-     * up while the paywall is OFF keeps its access forever, even after the
-     * switch is turned back on. Turning payments on must only affect people who
-     * sign up afterwards — otherwise a free launch turns into a mass lockout the
-     * day you start charging.
-     */
     const billing = await billingModel.getSettings();
-    const comped = !billing.payments_required;
+    const paymentsDisabled = !billing.payments_required;
     /**
      * With the paywall off we are not selling packages, so a package id in the
      * request is ignored rather than honoured. The signup form does not offer
@@ -89,30 +82,31 @@ async function registerGym(input) {
      *
      * Ignored, not rejected: their registration must still succeed.
      */
-    const plan = comped || !input.planId ? null : ((await billingModel.findPlan(input.planId)) ?? null);
+    const plan = paymentsDisabled || !input.planId ? null : ((await billingModel.findPlan(input.planId)) ?? null);
     // Checked rather than trusted: the id arrives from an unauthenticated form,
     // and a retired plan must not be signed up for just because a stale tab
     // still offers it.
-    if (!comped && input.planId && (!plan || !plan.is_active)) {
+    if (!paymentsDisabled && input.planId && (!plan || !plan.is_active)) {
         throw (0, errors_1.badRequest)('That package is no longer available. Please pick another.');
     }
     const passwordHash = await bcryptjs_1.default.hash(input.owner.password, 10);
-    // Free-trial mode (set by the platform admin): the gym starts immediately
-    // on a limited trial. Otherwise it waits as 'pending' until approved.
+    // Approval controls whether the gym waits in pending. Trial mode independently
+    // decides whether an active gym starts with a limited free-trial period.
     const platform = await platformModel.getSettings();
-    const trialFields = platform.trial_mode
-        ? {
-            status: 'active',
-            is_trial: true,
-            approved_at: new Date(),
-            subscription_ends_at: new Date(Date.now() + platform.trial_days * 86_400_000),
-        }
-        : { status: 'pending' };
+    const registeredAt = new Date();
+    const trialFields = {
+        status: platform.approval_required ? 'pending' : 'active',
+        is_trial: platform.trial_mode,
+        ...(!platform.approval_required ? { approved_at: registeredAt } : {}),
+        ...(platform.trial_mode && !platform.approval_required
+            ? { subscription_ends_at: new Date(registeredAt.getTime() + platform.trial_days * 86_400_000) }
+            : {}),
+    };
     const { gym, user } = await knex_1.db.transaction(async (trx) => {
         const gym = await gymModel.create({
             ...input.gym,
             ...trialFields,
-            comped,
+            comped: false,
             billing_plan_id: plan?.id ?? null,
             // Only meaningful alongside a plan — a cycle with nothing to bill is
             // not an intention, it is a stray field.
@@ -137,12 +131,16 @@ async function registerGym(input) {
     });
     // tell the platform admin (best effort, never blocks registration)
     void platformAlert
-        .notifyPlatformAdmin(platform.trial_mode
-        ? `New gym on FREE TRIAL: ${gym.name}`
-        : `New gym awaiting approval: ${gym.name}`, `Gym: ${gym.name}\nOwner: ${user.name} <${user.email}>\nPhone: ${input.gym.phone ?? input.owner.phone ?? '-'}\n\n` +
-        (platform.trial_mode
-            ? `Registered on a ${platform.trial_days}-day free trial (trial mode is ON). No action needed.`
-            : `Open your platform panel to approve or reject this registration.`))
+        .notifyPlatformAdmin(platform.approval_required
+        ? `New gym awaiting approval: ${gym.name}`
+        : platform.trial_mode
+            ? `New gym on FREE TRIAL: ${gym.name}`
+            : `New gym activated without a free trial: ${gym.name}`, `Gym: ${gym.name}\nOwner: ${user.name} <${user.email}>\nPhone: ${input.gym.phone ?? input.owner.phone ?? '-'}\n\n` +
+        (platform.approval_required
+            ? `Approval is required.${platform.trial_mode ? ` A ${platform.trial_days}-day trial will start when approved.` : ''} Open your platform panel to approve or reject this registration.`
+            : platform.trial_mode
+                ? `Registered on a ${platform.trial_days}-day free trial. No approval is needed.`
+                : 'The gym was activated immediately without a free trial.'))
         .catch(() => undefined);
     if (gym.status === 'pending') {
         return { pending: true, gym: { id: gym.id, name: gym.name } };

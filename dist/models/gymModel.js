@@ -60,7 +60,7 @@ async function listAll() {
 }
 /** Permanent exemption from the subscription paywall (see billingService.hasAccess). */
 async function setComped(id, comped) {
-    await (0, knex_1.db)('gyms').where({ id }).update({ comped });
+    await (0, knex_1.db)('gyms').where({ id }).update({ comped, comped_by_admin: comped });
 }
 /**
  * The 403 body a frozen gym's owner actually reads.

@@ -95,6 +95,7 @@ export interface FeatureNoticeRow {
 
 /** Single-row global platform configuration (see platform_settings table). */
 export interface PlatformSettings {
+  approval_required: boolean;
   trial_mode: boolean;
   trial_days: number;
 }

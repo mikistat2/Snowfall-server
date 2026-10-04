@@ -96,7 +96,11 @@ exports.adminRouter.get('/gyms/:id/export', (0, auth_1.requirePlatformPerm)('exp
 // owner-only: settings, gym deletion, sub-admin management
 exports.adminRouter.get('/settings', auth_1.requirePlatformOwner, (0, async_1.asyncHandler)(admin.getSettings));
 exports.adminRouter.put('/settings', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z
-    .object({ trial_mode: zod_1.z.boolean(), trial_days: zod_1.z.number().int().min(1).max(365) })
+    .object({
+    approval_required: zod_1.z.boolean(),
+    trial_mode: zod_1.z.boolean(),
+    trial_days: zod_1.z.number().int().min(1).max(365),
+})
     .partial()), (0, async_1.asyncHandler)(admin.updateSettings));
 // Feature entitlements. Owner-only, matching the other structural switches
 // (platform settings, comped status, gym deletion) rather than the
