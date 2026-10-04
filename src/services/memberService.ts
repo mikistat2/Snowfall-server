@@ -1,17 +1,38 @@
 import { db } from '../db/knex';
+import type { Knex } from 'knex';
 import * as gymModel from '../models/gymModel';
 import * as memberModel from '../models/memberModel';
 import * as planModel from '../models/planModel';
 import * as subscriptionModel from '../models/subscriptionModel';
 import * as paymentModel from '../models/paymentModel';
+import * as billingModel from '../models/billingModel';
 import * as auditLogModel from '../models/auditLogModel';
 import { recomputeMemberStatus } from './statusService';
 import { clearDebounce } from './checkInService';
 import * as memberPhotoService from './memberPhotoService';
 import { addDays, dateAtNoonUtc, dateOnly, dateOnlyUtc, daysBetween } from '../utils/dates';
 import { toGregorianDateOnly, type CalendarSystem } from '../utils/ethiopian';
-import { badRequest, notFound } from '../utils/errors';
+import { badRequest, conflict, notFound } from '../utils/errors';
 import type { MemberRow, PaymentMethod } from '../types';
+
+/**
+ * Check the assigned platform package while serializing enrollments per gym.
+ * The lock prevents two front desks from both observing the last free slot.
+ */
+async function assertMemberCapacity(gymId: number, trx: Knex): Promise<void> {
+  await trx.raw('SELECT pg_advisory_xact_lock(?)', [gymId]);
+  const gym = await gymModel.findById(gymId, trx);
+  if (!gym?.billing_plan_id) return;
+  const plan = await billingModel.findPlan(gym.billing_plan_id, trx);
+  if (!plan?.member_limit) return;
+  const count = await memberModel.activeCount(gymId, trx);
+  if (count >= plan.member_limit) {
+    throw conflict(
+      `This gym has reached the ${plan.name} package limit of ${plan.member_limit} active members. ` +
+        'Archive a member or ask the platform administrator to change the package.',
+    );
+  }
+}
 
 /**
  * Enrollment: member + face descriptors + first subscription + first payment,
@@ -35,6 +56,7 @@ export async function enroll(input: {
   }
 
   return db.transaction(async (trx) => {
+    await assertMemberCapacity(input.gymId, trx);
     const plan = await planModel.findById(input.gymId, input.planId);
     if (!plan || !plan.active) throw badRequest('Plan not found or inactive');
 
@@ -147,6 +169,7 @@ export async function enrollPrevious(input: {
   }
 
   return db.transaction(async (trx) => {
+    await assertMemberCapacity(input.gymId, trx);
     const plan = await planModel.findById(input.gymId, input.planId);
     if (!plan || !plan.active) throw badRequest('Plan not found or inactive');
 
@@ -299,6 +322,7 @@ export async function restore(gymId: number, memberId: number, userId: number): 
   if (!member.archived_at) throw badRequest('Member is not archived');
 
   const updated = await db.transaction(async (trx) => {
+    await assertMemberCapacity(gymId, trx);
     const row = await memberModel.setArchived(gymId, memberId, false, trx);
     // the nightly cron skipped them while archived, so their stored status is
     // as stale as the day they left

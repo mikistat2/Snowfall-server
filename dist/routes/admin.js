@@ -72,6 +72,7 @@ exports.adminRouter.get('/overview', (0, async_1.asyncHandler)(admin.overview));
 exports.adminRouter.get('/gyms', (0, async_1.asyncHandler)(admin.listGyms));
 exports.adminRouter.get('/gyms/:id', (0, async_1.asyncHandler)(admin.gymDetail));
 exports.adminRouter.put('/gyms/:id/note', (0, validate_1.validate)(zod_1.z.object({ note: zod_1.z.string().max(1000).nullable() })), (0, async_1.asyncHandler)(admin.updateNote));
+exports.adminRouter.put('/gyms/:id/billing-plan', auth_1.requirePlatformOwner, (0, validate_1.validate)(zod_1.z.object({ planId: zod_1.z.number().int().positive(), cycle: zod_1.z.enum(['MONTHLY', 'YEARLY']) })), (0, async_1.asyncHandler)(admin.setBillingPlan));
 // permission-gated (the owner always passes)
 exports.adminRouter.post('/gyms/:id/approve', (0, auth_1.requirePlatformPerm)('approve'), 
 // Body optional: no body still means "a year", as approval always did.

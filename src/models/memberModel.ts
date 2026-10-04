@@ -159,6 +159,16 @@ export async function create(
   return row;
 }
 
+/** Active roster size used by the platform package-capacity rule. */
+export async function activeCount(gymId: number, trx: Knex = db): Promise<number> {
+  const row = await trx('members')
+    .where({ gym_id: gymId })
+    .whereNull('archived_at')
+    .count<{ count: string }>('id as count')
+    .first();
+  return Number(row?.count ?? 0);
+}
+
 export async function update(
   gymId: number,
   id: number,

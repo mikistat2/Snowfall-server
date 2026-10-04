@@ -15,6 +15,7 @@ import * as memberModel from '../models/memberModel';
 import * as platformAlert from '../services/platformAlertService';
 import * as auditLogModel from '../models/auditLogModel';
 import * as botManager from '../telegram/botManager';
+import * as billingModel from '../models/billingModel';
 import type { BillingCycle, FeatureKey, GymFeatures } from '../types';
 // Owner alerts (Telegram/email) must never make the admin UI hang: wait at
 // most `ms`, then respond anyway — the alert keeps sending in the background.
@@ -317,6 +318,35 @@ export async function updateNote(req: Request, res: Response): Promise<void> {
   if (!gym) throw notFound('Gym not found');
   await platformModel.setNote(id, (req.body as { note: string | null }).note);
   res.json({ ok: true });
+}
+
+/** Assign the package metadata used by the gym and the member-capacity rule. */
+export async function setBillingPlan(req: Request, res: Response): Promise<void> {
+  const gymId = Number(req.params.id);
+  const gym = await gymModel.findById(gymId);
+  if (!gym) throw notFound('Gym not found');
+
+  const { planId, cycle } = req.body as { planId: number; cycle: BillingCycle };
+  const plan = await billingModel.findPlan(planId);
+  if (!plan || !plan.is_active) throw notFound('Active billing plan not found');
+
+  await platformModel.setBillingPlan(gymId, plan.id, cycle);
+  await auditLogModel.log({
+    gym_id: gymId,
+    user_id: null,
+    action: 'platform.billing_plan_updated',
+    entity: 'gym',
+    entity_id: gymId,
+    meta: {
+      previous_plan_id: gym.billing_plan_id,
+      previous_cycle: gym.billing_cycle,
+      plan_id: plan.id,
+      plan_name: plan.name,
+      cycle,
+      by: req.platform?.isOwner ? 'platform_owner' : `platform_admin:${req.platform?.name ?? 'unknown'}`,
+    },
+  });
+  res.json({ ok: true, plan_id: plan.id, plan_name: plan.name, cycle, member_limit: plan.member_limit });
 }
 
 export async function deleteGym(req: Request, res: Response): Promise<void> {

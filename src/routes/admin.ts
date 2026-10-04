@@ -47,6 +47,12 @@ adminRouter.put(
   validate(z.object({ note: z.string().max(1000).nullable() })),
   asyncHandler(admin.updateNote),
 );
+adminRouter.put(
+  '/gyms/:id/billing-plan',
+  requirePlatformOwner,
+  validate(z.object({ planId: z.number().int().positive(), cycle: z.enum(['MONTHLY', 'YEARLY']) })),
+  asyncHandler(admin.setBillingPlan),
+);
 
 // permission-gated (the owner always passes)
 adminRouter.post(

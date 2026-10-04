@@ -4,6 +4,7 @@ exports.listByGym = listByGym;
 exports.exportByGym = exportByGym;
 exports.findById = findById;
 exports.create = create;
+exports.activeCount = activeCount;
 exports.update = update;
 exports.setStatus = setStatus;
 exports.setArchived = setArchived;
@@ -100,6 +101,15 @@ async function findById(gymId, id, trx = knex_1.db) {
 async function create(gymId, data, trx = knex_1.db) {
     const [row] = await trx('members').insert({ ...data, gym_id: gymId }).returning('*');
     return row;
+}
+/** Active roster size used by the platform package-capacity rule. */
+async function activeCount(gymId, trx = knex_1.db) {
+    const row = await trx('members')
+        .where({ gym_id: gymId })
+        .whereNull('archived_at')
+        .count('id as count')
+        .first();
+    return Number(row?.count ?? 0);
 }
 async function update(gymId, id, data, trx = knex_1.db) {
     const [row] = await trx('members').where({ gym_id: gymId, id }).update(data).returning('*');

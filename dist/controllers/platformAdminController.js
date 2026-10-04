@@ -52,6 +52,7 @@ exports.approveGym = approveGym;
 exports.renewGym = renewGym;
 exports.setTrial = setTrial;
 exports.updateNote = updateNote;
+exports.setBillingPlan = setBillingPlan;
 exports.deleteGym = deleteGym;
 exports.deleteStaff = deleteStaff;
 exports.restoreStaff = restoreStaff;
@@ -75,6 +76,7 @@ const memberModel = __importStar(require("../models/memberModel"));
 const platformAlert = __importStar(require("../services/platformAlertService"));
 const auditLogModel = __importStar(require("../models/auditLogModel"));
 const botManager = __importStar(require("../telegram/botManager"));
+const billingModel = __importStar(require("../models/billingModel"));
 // Owner alerts (Telegram/email) must never make the admin UI hang: wait at
 // most `ms`, then respond anyway — the alert keeps sending in the background.
 const async_1 = require("../utils/async");
@@ -356,6 +358,34 @@ async function updateNote(req, res) {
         throw (0, errors_1.notFound)('Gym not found');
     await platformModel.setNote(id, req.body.note);
     res.json({ ok: true });
+}
+/** Assign the package metadata used by the gym and the member-capacity rule. */
+async function setBillingPlan(req, res) {
+    const gymId = Number(req.params.id);
+    const gym = await gymModel.findById(gymId);
+    if (!gym)
+        throw (0, errors_1.notFound)('Gym not found');
+    const { planId, cycle } = req.body;
+    const plan = await billingModel.findPlan(planId);
+    if (!plan || !plan.is_active)
+        throw (0, errors_1.notFound)('Active billing plan not found');
+    await platformModel.setBillingPlan(gymId, plan.id, cycle);
+    await auditLogModel.log({
+        gym_id: gymId,
+        user_id: null,
+        action: 'platform.billing_plan_updated',
+        entity: 'gym',
+        entity_id: gymId,
+        meta: {
+            previous_plan_id: gym.billing_plan_id,
+            previous_cycle: gym.billing_cycle,
+            plan_id: plan.id,
+            plan_name: plan.name,
+            cycle,
+            by: req.platform?.isOwner ? 'platform_owner' : `platform_admin:${req.platform?.name ?? 'unknown'}`,
+        },
+    });
+    res.json({ ok: true, plan_id: plan.id, plan_name: plan.name, cycle, member_limit: plan.member_limit });
 }
 async function deleteGym(req, res) {
     const id = Number(req.params.id);

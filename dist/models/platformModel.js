@@ -7,6 +7,7 @@ exports.listGyms = listGyms;
 exports.gymStaff = gymStaff;
 exports.setStatus = setStatus;
 exports.setNote = setNote;
+exports.setBillingPlan = setBillingPlan;
 exports.approveGym = approveGym;
 exports.renewGym = renewGym;
 exports.setTrial = setTrial;
@@ -66,13 +67,14 @@ async function listGyms(search) {
     SELECT
       g.id, g.name, g.address, g.phone, g.status, g.frozen_at, g.admin_note, g.freeze_note,
       g.approved_at, g.subscription_ends_at, g.is_trial, g.comped, g.created_at,
-      g.camera_allowed, g.telegram_allowed, g.billing_cycle,
+      g.camera_allowed, g.telegram_allowed, g.billing_plan_id, g.billing_cycle,
       -- The package the gym last paid for, and what that package includes, so
       -- the panel can show both the plan and where a gym's switches disagree
       -- with it. LEFT: a gym that has never paid has no plan and must still list.
       pl.name     AS plan_name,
       pl.camera   AS plan_camera,
       pl.telegram AS plan_telegram,
+      pl.member_limit AS plan_member_limit,
       o.name  AS owner_name,
       o.email AS owner_email,
       o.phone AS owner_phone,
@@ -153,6 +155,10 @@ async function setStatus(gymId, status, note) {
 }
 async function setNote(gymId, note) {
     await (0, knex_1.db)('gyms').where({ id: gymId }).update({ admin_note: note });
+}
+/** Assign the package and billing cycle shown for a gym in the platform panel. */
+async function setBillingPlan(gymId, planId, cycle) {
+    await (0, knex_1.db)('gyms').where({ id: gymId }).update({ billing_plan_id: planId, billing_cycle: cycle });
 }
 /** Approve a pending registration: active + paid year starting now. */
 async function approveGym(gymId, cycle = 'YEARLY') {
