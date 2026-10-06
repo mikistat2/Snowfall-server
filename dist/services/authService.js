@@ -48,6 +48,7 @@ const refreshTokenModel = __importStar(require("../models/refreshTokenModel"));
 const platformModel = __importStar(require("../models/platformModel"));
 const billingModel = __importStar(require("../models/billingModel"));
 const platformAlert = __importStar(require("./platformAlertService"));
+const billingChecks_1 = require("./billingChecks");
 const jwt_1 = require("../utils/jwt");
 const errors_1 = require("../utils/errors");
 /**
@@ -94,12 +95,16 @@ async function registerGym(input) {
     // decides whether an active gym starts with a limited free-trial period.
     const platform = await platformModel.getSettings();
     const registeredAt = new Date();
+    const startsMonthlySubscription = paymentsDisabled && !platform.approval_required && !platform.trial_mode;
     const trialFields = {
         status: platform.approval_required ? 'pending' : 'active',
         is_trial: platform.trial_mode,
         ...(!platform.approval_required ? { approved_at: registeredAt } : {}),
         ...(platform.trial_mode && !platform.approval_required
             ? { subscription_ends_at: new Date(registeredAt.getTime() + platform.trial_days * 86_400_000) }
+            : {}),
+        ...(startsMonthlySubscription
+            ? { subscription_ends_at: (0, billingChecks_1.computePeriod)(null, 'MONTHLY', registeredAt).end }
             : {}),
     };
     const { gym, user } = await knex_1.db.transaction(async (trx) => {
@@ -116,7 +121,7 @@ async function registerGym(input) {
             // which today means an old build; defaulting those to monthly while
             // every current screen shows yearly would record the wrong intent for
             // exactly the gyms whose choice we cannot see.
-            billing_cycle: plan ? (input.cycle ?? 'YEARLY') : null,
+            billing_cycle: plan ? (input.cycle ?? 'YEARLY') : startsMonthlySubscription ? 'MONTHLY' : null,
             ...UNPAID_ENTITLEMENTS,
         }, trx);
         const user = await userModel.create({

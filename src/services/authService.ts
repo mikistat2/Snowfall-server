@@ -6,6 +6,7 @@ import * as refreshTokenModel from '../models/refreshTokenModel';
 import * as platformModel from '../models/platformModel';
 import * as billingModel from '../models/billingModel';
 import * as platformAlert from './platformAlertService';
+import { computePeriod } from './billingChecks';
 import {
   signAccessToken,
   generateRefreshToken,
@@ -82,12 +83,16 @@ export async function registerGym(input: {
   // decides whether an active gym starts with a limited free-trial period.
   const platform = await platformModel.getSettings();
   const registeredAt = new Date();
+  const startsMonthlySubscription = paymentsDisabled && !platform.approval_required && !platform.trial_mode;
   const trialFields = {
     status: platform.approval_required ? ('pending' as const) : ('active' as const),
     is_trial: platform.trial_mode,
     ...(!platform.approval_required ? { approved_at: registeredAt } : {}),
     ...(platform.trial_mode && !platform.approval_required
       ? { subscription_ends_at: new Date(registeredAt.getTime() + platform.trial_days * 86_400_000) }
+      : {}),
+    ...(startsMonthlySubscription
+      ? { subscription_ends_at: computePeriod(null, 'MONTHLY', registeredAt).end }
       : {}),
   };
 
@@ -106,7 +111,7 @@ export async function registerGym(input: {
         // which today means an old build; defaulting those to monthly while
         // every current screen shows yearly would record the wrong intent for
         // exactly the gyms whose choice we cannot see.
-        billing_cycle: plan ? (input.cycle ?? 'YEARLY') : null,
+        billing_cycle: plan ? (input.cycle ?? 'YEARLY') : startsMonthlySubscription ? 'MONTHLY' : null,
         ...UNPAID_ENTITLEMENTS,
       },
       trx,
