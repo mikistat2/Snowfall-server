@@ -41,27 +41,29 @@ export async function renew(input: {
     const current = await subscriptionModel.findLatestByMember(input.memberId, trx);
     const { startsAt, expiresAt } = computeRenewal(current?.expires_at ?? null, new Date(), plan.duration_days);
 
-    let subscriptionId: number;
-    if (current && current.plan_id === plan.id) {
+    // Always create a new subscription row so that every renewal period is
+    // recorded as a separate entry in the member's subscription history. The
+    // old approach silently extended the same row when the plan matched,
+    // which erased the previous start/end dates from the history.
+    if (current) {
       await subscriptionModel.update(
         current.id,
-        { expires_at: expiresAt, status: 'active', frozen_at: null, frozen_days_remaining: null },
+        { status: 'expired', frozen_at: null, frozen_days_remaining: null },
         trx,
       );
-      subscriptionId = current.id;
-    } else {
-      const created = await subscriptionModel.create(
-        {
-          gym_id: input.gymId,
-          member_id: input.memberId,
-          plan_id: plan.id,
-          starts_at: startsAt,
-          expires_at: expiresAt,
-        },
-        trx,
-      );
-      subscriptionId = created.id;
     }
+
+    const created = await subscriptionModel.create(
+      {
+        gym_id: input.gymId,
+        member_id: input.memberId,
+        plan_id: plan.id,
+        starts_at: startsAt,
+        expires_at: expiresAt,
+      },
+      trx,
+    );
+    const subscriptionId = created.id;
 
     const payment = await paymentModel.create(
       {
